@@ -76,6 +76,23 @@ else
     WARNINGS=$((WARNINGS + 1))
 fi
 
+# Check I2C Camera Communication
+echo -n "  I2C Communication: "
+FOUND_I2C=0
+for bus in 0 1 7 8 9 10; do
+    if i2cdetect -y -r $bus 2>/dev/null | grep -q "[0-9a-f][0-9a-f]"; then
+       FOUND_I2C=1
+    fi
+done
+
+if [ $FOUND_I2C -eq 1 ]; then
+    echo -e "${GREEN}✓ Devices detected on I2C bus${NC}"
+else
+    echo -e "${RED}✗ No devices detected on I2C bus${NC}"
+    echo -e "    ${YELLOW}Tip: Check ribbon cable orientation! (Blue side away from heatsink)${NC}"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
 echo ""
 
 # Camera Tests
