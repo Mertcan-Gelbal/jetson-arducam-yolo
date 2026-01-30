@@ -157,11 +157,11 @@ This guide covers common issues and their solutions when working with Arducam ca
 ## Docker Issues
 
 ### Docker Build Out of Memory
-**Error:** `CRITICAL WARNING: Total memory (RAM+Swap) is less than 8GB`
-**Error:** `gcc: internal compiler error: Killed (program cc1plus)`
+**Script Error:** `CRITICAL WARNING: Total memory (RAM+Swap) is less than 8GB.`
+**System Error:** `gcc: internal compiler error: Killed (program cc1plus)`
 
 **Solution:**
-The YOLOv8 build process requires significant memory. If you see this error, you **MUST** add swap space.
+The script has detected that you don't have enough memory. You **MUST** add swap space.
 
 ```bash
 # 1. Disable ZRAM (optional but recommended)
@@ -173,22 +173,48 @@ sudo fallocate -l 8G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
-
-# 3. Verify
-free -h
-# You should see 'Swap: 8.0Gi'
 ```
 
 ### Docker Service Not Running
-**Error:** `Warning: Docker service is not running`
+**Script Error:** `Warning: Docker service is not running`
+**Script Error:** `Error: Failed to start Docker.`
 
 **Solution:**
+Docker is installed but the background service is stopped.
 ```bash
 sudo systemctl enable docker
 sudo systemctl start docker
 # Verify
 sudo docker info
 ```
+
+### Internet Connection Failed
+**Script Error:** `Error: No internet connection detected.`
+**Script Error:** `Could not download installer.`
+
+**Solution:**
+The installer needs to download files from GitHub.
+1. Check Ethernet/WiFi connection.
+2. Verify DNS:
+   ```bash
+   ping -c 1 8.8.8.8
+   ```
+
+### Camera Driver Installation Failed
+**Script Error:** `Driver installation failed.`
+**Script Error:** `Package installation failed.`
+
+**Solution:**
+This usually happens if `apt` is locked or a package is broken.
+1. Fix broken packages:
+   ```bash
+   sudo apt update --fix-missing
+   sudo dpkg --configure -a
+   ```
+2. Reboot and try running the script again:
+   ```bash
+   ./scripts/setup_cameras.sh
+   ```
 
 ## Performance Issues
 
