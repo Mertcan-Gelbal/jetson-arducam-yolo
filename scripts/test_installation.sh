@@ -52,6 +52,21 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
+# Check OS Version
+if [ -f /etc/os-release ]; then
+    UBUNTU_VER=$(grep "PRETTY_NAME" /etc/os-release | cut -d'"' -f2)
+    echo -e "  OS: ${GREEN}$UBUNTU_VER${NC}"
+fi
+
+# Check GStreamer Version
+if command -v gst-inspect-1.0 &> /dev/null; then
+    GST_VER=$(gst-inspect-1.0 --version | head -n 1 | awk '{print $NF}')
+    echo -e "  GStreamer: ${GREEN}$GST_VER${NC}"
+else
+    echo -e "${YELLOW}⚠ GStreamer tools not found, cannot determine version${NC}"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
 # JetPack version
 JP_VERSION=$(apt-cache show nvidia-jetpack 2>/dev/null | grep Version | head -n 1)
 if [ -n "$JP_VERSION" ]; then
