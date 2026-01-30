@@ -69,4 +69,31 @@ elif [ "$L4T_RELEASE" -eq 32 ]; then
     echo "- Use 'nveglglessink' for display instead of 'autovideosink'."
 fi
 
+# 5. OpenCV + GStreamer Support Check
+echo -e "\n${CYAN}Checking OpenCV + GStreamer Integration...${NC}"
+if python3 -c "import cv2; print(cv2.getBuildInformation())" | grep -q "GStreamer:.*YES"; then
+    echo -e "${GREEN}✓ OpenCV is compiled with GStreamer support.${NC}"
+else
+    echo -e "${RED}✗ OpenCV GStreamer support MISSING.${NC}"
+    echo "Tip: Avoid installing 'python3-opencv' via apt inside Docker."
+fi
+
+# 6. Capture Test (The Ultimate Proof)
+echo -e "\n${CYAN}Testing Frame Capture...${NC}"
+rm -f test_frame.jpg
+if timeout 5 gst-launch-1.0 nvarguscamerasrc sensor-id=0 num-buffers=1 ! \
+    'video/x-raw(memory:NVMM),width=640,height=480' ! \
+    nvvidconv ! jpegenc ! filesink location=test_frame.jpg &> /dev/null; then
+    
+    if [ -f test_frame.jpg ]; then
+        echo -e "${GREEN}✓ Success! Single frame captured to test_frame.jpg${NC}"
+        rm test_frame.jpg
+    else
+        echo -e "${RED}✗ Pipeline finished but no file produced.${NC}"
+    fi
+else
+    echo -e "${RED}✗ Critical: GStreamer cannot capture from sensor 0.${NC}"
+    echo "Check 'dmesg' for more details."
+fi
+
 echo -e "\n${CYAN}Diagnostic complete.${NC}"

@@ -29,6 +29,17 @@ if ! systemctl is-active --quiet docker; then
     echo -e "${GREEN}✓ Docker started.${NC}"
 fi
 
+# 1.5 Quick GStreamer & Camera Health Check
+echo ""
+echo "Running Hardware Diagnostics..."
+if ! ./scripts/check_gstreamer.sh; then
+    echo -e "${YELLOW}Warning: Hardware diagnostics found issues.${NC}"
+    read -p "Your camera might not work inside Docker. Continue with build? (y/N): " HW_CONT
+    if [[ ! $HW_CONT =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
 # 2. Check Memory Resources (Prevent OOM)
 TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
 TOTAL_SWAP=$(free -m | awk '/^Swap:/{print $2}')
