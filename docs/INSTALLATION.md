@@ -291,50 +291,35 @@ Key components:
 
 ### 3. Build Docker Image
 
+We provide an automated script that detects your JetPack version and builds the correct image:
+
 ```bash
 # Build the container (takes 10-20 minutes)
-sudo docker build -t yolo_jp512:latest .
-
-# Monitor build progress
-# This will download base image (~4GB) and install all dependencies
+./scripts/build_docker.sh
 ```
 
 **Troubleshooting Build Issues:**
 
 If build fails due to memory:
 ```bash
-# Enable swap if not already done
-# See System Preparation section above
-
-# Try building with reduced parallelism
-sudo docker build --build-arg JOBS=2 -t yolo_jp512:latest .
+# The script will auto-detect low memory and suggest creating a swap file.
+# Follow the on-screen instructions.
 ```
 
 ### 4. Run Container
 
+Use the run script to automatically handle device mounting:
+
 ```bash
-# Run with full hardware access
-sudo docker run -d --name yolo_ctr \
-  --runtime nvidia \
-  --net=host \
-  --restart unless-stopped \
-  --device=/dev/video0 \
-  --device=/dev/video1 \
-  -v $(pwd):/workspace \
-  -w /workspace \
-  yolo_jp512:latest
+# Start the container
+./scripts/run_docker.sh
 ```
 
-**Command Breakdown:**
-- `-d`: Run in detached mode
-- `--name yolo_ctr`: Container name
-- `--runtime nvidia`: Use NVIDIA runtime for GPU access
-- `--net=host`: Use host network (simplifies camera access)
-- `--restart unless-stopped`: Auto-restart on failure
-- `--device=/dev/video0`: Mount camera device 0
-- `--device=/dev/video1`: Mount camera device 1
-- `-v $(pwd):/workspace`: Mount current directory
-- `-w /workspace`: Set working directory
+**What the script does:**
+- Mounts all `/dev/video*` devices
+- Sets up NVIDIA runtime
+- Mounts current directory to workspace
+- Auto-restarts on boot
 
 ### 5. Verify Container is Running
 
@@ -343,10 +328,10 @@ sudo docker run -d --name yolo_ctr \
 sudo docker ps
 
 # View container logs
-sudo docker logs yolo_ctr
+sudo docker logs jetson-arducam-ctr
 
 # Access container shell
-sudo docker exec -it yolo_ctr bash
+sudo docker exec -it jetson-arducam-ctr bash
 ```
 
 ## Verification
@@ -357,7 +342,7 @@ Inside the container:
 
 ```bash
 # Enter container
-sudo docker exec -it yolo_ctr bash
+sudo docker exec -it jetson-arducam-ctr bash
 
 # Test Python
 python3 --version
@@ -483,7 +468,7 @@ sudo i2cdetect -y -r 7
 ```bash
 # Add swap space (see System Preparation)
 # Try building with reduced workers
-sudo docker build --memory=4g --memory-swap=8g -t yolo_jp512:latest .
+sudo docker build --memory=4g --memory-swap=8g -t jetson-arducam:latest .
 ```
 
 ### Issue: Permission Denied for Docker
