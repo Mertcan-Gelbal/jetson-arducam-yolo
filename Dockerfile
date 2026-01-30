@@ -1,4 +1,5 @@
-FROM nvcr.io/nvidia/l4t-pytorch:r35.4.1-pth2.0-py3
+ARG L4T_VERSION=r35.4.1
+FROM nvcr.io/nvidia/l4t-pytorch:${L4T_VERSION}-pth2.0-py3
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
