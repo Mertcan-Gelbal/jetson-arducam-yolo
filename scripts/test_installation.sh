@@ -128,11 +128,11 @@ if command -v docker &> /dev/null; then
     fi
     
     # Check for our image
-    if docker images | grep -q yolo_jp512; then
-        echo -e "${GREEN}✓ YOLOv8 Docker image found${NC}"
+    if docker images | grep -q jetson-arducam; then
+        echo -e "${GREEN}✓ Jetson Arducam Docker image found${NC}"
     else
-        echo -e "${YELLOW}⚠ YOLOv8 Docker image not built yet${NC}"
-        echo "  Run: sudo docker build -t yolo_jp512:latest ."
+        echo -e "${YELLOW}⚠ Docker image not built yet${NC}"
+        echo "  Run: ./scripts/build_docker.sh"
         WARNINGS=$((WARNINGS + 1))
     fi
 fi
@@ -248,9 +248,9 @@ if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
     echo -e "${GREEN}✓ All checks passed!${NC}"
     echo ""
     echo "Next steps:"
-    echo "  1. Build Docker image: sudo docker build -t yolo_jp512:latest ."
-    echo "  2. Run container: sudo docker run -d --name yolo_ctr --runtime nvidia --net=host --device=/dev/video0 --device=/dev/video1 -v \$(pwd):/workspace -w /workspace yolo_jp512:latest"
-    echo "  3. Test examples: sudo docker exec -it yolo_ctr python3 examples/basic_detection.py --display"
+    echo "  1. Build Docker image: ./scripts/build_docker.sh"
+    echo "  2. Run container: ./scripts/run_docker.sh"
+    echo "  3. Test examples: sudo docker exec -it jetson-arducam-ctr python3 examples/basic_detection.py --display"
 elif [ $ERRORS -eq 0 ]; then
     echo -e "${YELLOW}Checks passed with $WARNINGS warning(s)${NC}"
     echo "Review warnings above and address if needed."
