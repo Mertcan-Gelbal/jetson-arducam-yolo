@@ -19,7 +19,7 @@ The simplest way to get started:
 
 ```bash
 # Enter the Docker container
-sudo docker exec -it yolo_ctr bash
+sudo docker exec -it jetson-arducam-ctr bash
 
 # Run basic detection
 python3 examples/basic_detection.py --camera 0 --display
@@ -247,46 +247,46 @@ python3 examples/tensorrt_export.py \
 
 ```bash
 # Start container
-sudo docker start yolo_ctr
+sudo docker start jetson-arducam-ctr
 
 # Stop container
-sudo docker stop yolo_ctr
+sudo docker stop jetson-arducam-ctr
 
 # Restart container
-sudo docker restart yolo_ctr
+sudo docker restart jetson-arducam-ctr
 
 # Remove container
-sudo docker rm yolo_ctr
+sudo docker rm jetson-arducam-ctr
 
 # View logs
-sudo docker logs -f yolo_ctr
+sudo docker logs -f jetson-arducam-ctr
 
 # Check status
-sudo docker ps -a | grep yolo_ctr
+sudo docker ps -a | grep jetson-arducam-ctr
 ```
 
 ### Accessing Container
 
 ```bash
 # Interactive shell
-sudo docker exec -it yolo_ctr bash
+sudo docker exec -it jetson-arducam-ctr bash
 
 # Run single command
-sudo docker exec yolo_ctr python3 --version
+sudo docker exec jetson-arducam-ctr python3 --version
 
 # Run with display (X11 forwarding)
 xhost +local:docker
-sudo docker exec -it -e DISPLAY=$DISPLAY yolo_ctr bash
+sudo docker exec -it -e DISPLAY=$DISPLAY jetson-arducam-ctr bash
 ```
 
 ### Resource Monitoring
 
 ```bash
 # Real-time stats
-sudo docker stats yolo_ctr
+sudo docker stats jetson-arducam-ctr
 
 # Resource limits
-sudo docker update --memory=6g yolo_ctr
+sudo docker update --memory=6g jetson-arducam-ctr
 ```
 
 ## Performance Optimization
@@ -465,7 +465,7 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/docker exec yolo_ctr python3 /workspace/examples/basic_detection.py
+ExecStart=/usr/bin/docker exec jetson-arducam-ctr python3 /workspace/examples/basic_detection.py
 Restart=always
 RestartSec=10
 
@@ -514,7 +514,7 @@ logger.error("Camera failed")
 If you encounter issues:
 
 1. Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
-2. Review logs: `sudo docker logs yolo_ctr`
+2. Review logs: `sudo docker logs jetson-arducam-ctr`
 3. Open an issue on GitHub
 
 ---
