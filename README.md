@@ -1,97 +1,97 @@
-# Jetson Arducam YOLOv8
+# Jetson Arducam AI Kit
 
-Production-ready Docker environment for running YOLOv8 object detection with Arducam multi-camera arrays on NVIDIA Jetson devices.
+A flexible, production-ready environment for running modern Computer Vision models (YOLOv8, YOLOv11, RT-DETR, EfficientNet, etc.) with Arducam hardware on NVIDIA Jetson.
 
-## Features
+## 🚀 Features
 
-*   **Dynamic JetPack Support:** Automatically detects L4T version (JetPack 5.x/6.x) and builds the appropriate container.
-*   **Multi-Camera:** Threaded support for Arducam IMX519 stereo and multi-camera arrays.
-*   **Hardware Acceleration:** GStreamer pipelines optimized for NVIDIA Jetson ISP and NVDEC.
-*   **TensorRT:** Examples for converting YOLOv8 models to TensorRT for 2-3x performance boost.
-*   **Production Ready:** Docker container configured with auto-restart, privileged access, and volume mounts.
+*   **Universal Model Support:** Run any model supported by Ultralytics and PyTorch (Object Detection, Segmentation, Pose Estimation, Classification).
+*   **Dynamic Platform:** Automatically adapts to JetPack 5.x or 6.x and selects the optimal L4T base image.
+*   **Arducam Ecosystem:** Built-in driver installer for the entire ISP camera lineup (IMX519, IMX477, IMX219, IMX708, Global Shutter).
+*   **Hardware Acceleration:** Optimized GStreamer pipelines utilizing Jetson's ISP and NVDEC engines.
+*   **TensorRT Ready:** Tools to convert any supported model to TensorRT for maximum inference speed (2-3x boost).
 
-## Project Structure
+## 📂 Project Structure
 
 ```text
-jetson-arducam-yolo/
-├── Dockerfile                  # Dynamic base image selection
+jetson-arducam-ai/
+├── Dockerfile                  # Generic AI environment (PyTorch + Ultralytics)
 ├── scripts/
-│   ├── build_docker.sh         # Builds image based on system L4T version
-│   ├── run_docker.sh           # Runs container with device mounts
-│   ├── setup_cameras.sh        # Installs Arducam drivers
-│   └── test_installation.sh    # Verifies system status
+│   ├── build_docker.sh         # Builds 'jetson-arducam' image
+│   ├── run_docker.sh           # Runs 'jetson-arducam-ctr' container
+│   ├── setup_cameras.sh        # Universal camera driver installer
+│   └── test_installation.sh    # System diagnostics
 ├── examples/
-│   ├── basic_detection.py      # Basic YOLOv8 inference
-│   ├── multi_camera_detection.py # Multi-threaded multi-camera example
-│   ├── gstreamer_pipeline.py   # Optimized GStreamer pipeline
-│   └── tensorrt_export.py      # TensorRT conversion tool
-└── docs/                       # Detailed documentation
+│   ├── basic_detection.py      # Inference demo (supports all YOLO versions)
+│   ├── multi_camera_detection.py # Multi-stream threading example
+│   ├── gstreamer_pipeline.py   # Low-latency ISP pipeline
+│   └── tensorrt_export.py      # Model optimizer
+└── docs/                       # Guides for Installation, Usage & Troubleshooting
 ```
 
-## Installation
+## 🛠️ Installation
 
-### 1. Requirements
-
-*   NVIDIA Jetson (Orin Nano, Orin NX, AGX Orin)
-*   JetPack 5.1.1+ (L4T R35.4.1+)
-*   Docker with NVIDIA Runtime
-
-### 2. Quick Setup
-
+### 1. Setup Drivers
 ```bash
-# Clone
 git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git
 cd jetson-arducam-yolo
-
-# Install Drivers (Interactive Menu)
 ./scripts/setup_cameras.sh
+```
 
-# Or install specific driver directly
-# ./scripts/setup_cameras.sh imx477
-
-# Build (Auto-detects JetPack version)
+### 2. Build Environment
+```bash
 ./scripts/build_docker.sh
+```
 
-# Run
+### 3. Start Container
+```bash
 ./scripts/run_docker.sh
 ```
 
-## Usage
+## 🧠 Usage
 
-### Basic Detection
+The environment supports the entire Ultralytics ecosystem. You can swap models easily.
 
-```bash
-sudo docker exec -it jetson-yolo-ctr python3 examples/basic_detection.py --camera 0
-```
-
-### Multi-Camera (Stereo/Quad)
+### Running Different Models
 
 ```bash
-sudo docker exec -it jetson-yolo-ctr python3 examples/multi_camera_detection.py --cameras 0 1
+# Enter container
+sudo docker exec -it jetson-arducam-ctr bash
+
+# YOLOv8 Nano (Fastest)
+python3 examples/basic_detection.py --model yolov8n.pt
+
+# YOLOv8 Medium (Better Accuracy)
+python3 examples/basic_detection.py --model yolov8m.pt
+
+# YOLOv11 (New SOTA)
+python3 examples/basic_detection.py --model yolo11n.pt
+
+# RT-DETR (Transformer)
+python3 examples/basic_detection.py --model rtdetr-l.pt
 ```
 
-### TensorRT Optimization
+### Multi-Camera (Stereo/Array)
+Support for synchronized processing of multiple camera streams:
+```bash
+python3 examples/multi_camera_detection.py --cameras 0 1
+```
 
-Using TensorRT significantly improves FPS.
+## ⚡ Performance
 
-1.  **Export Model:**
+To unlock full performance on Jetson:
+
+1.  **Maximize Clocks:** `sudo nvpmodel -m 0 && sudo jetson_clocks`
+2.  **Use TensorRT:**
     ```bash
-    python3 examples/tensorrt_export.py --model yolov8n.pt --export
+    # Convert any model
+    python3 examples/tensorrt_export.py --model yolo11n.pt --export
+    
+    # Run optimized model
+    python3 examples/basic_detection.py --model yolo11n.engine
     ```
 
-2.  **Run with Engine:**
-    ```bash
-    python3 examples/basic_detection.py --model yolov8n.engine
-    ```
-
-## Troubleshooting
-
-*   **Camera not detected:** Ensure `setup_cameras.sh` was run and system rebooted. Check `ls /dev/video*`.
-*   **Permissions:** Use `sudo` or add user to docker group.
-*   **Performance:** Run `sudo nvpmodel -m 0` and `sudo jetson_clocks` on host.
-
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for detailed solutions.
+## 🤝 Support
+Open an issue for bugs or feature requests. See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for help.
 
 ## License
-
-MIT License. See [LICENSE](LICENSE) file.
+MIT License.

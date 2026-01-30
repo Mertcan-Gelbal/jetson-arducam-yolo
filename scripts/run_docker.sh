@@ -4,8 +4,8 @@
 # Starts the Docker container with necessary device permissions and volume mounts
 #
 
-CONTAINER_NAME="jetson-yolo-ctr"
-IMAGE_NAME="jetson-yolo:latest"
+CONTAINER_NAME="jetson-arducam-ctr"
+IMAGE_NAME="jetson-arducam:latest"
 
 # Check if container is already running
 if sudo docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then

@@ -49,7 +49,7 @@ Inside the container:
 
 ```bash
 # Enter container
-sudo docker exec -it jetson-yolo-ctr bash
+sudo docker exec -it jetson-arducam-ctr bash
 
 # Run basic detection
 python3 examples/basic_detection.py --camera 0 --display

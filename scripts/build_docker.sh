@@ -70,10 +70,10 @@ fi
 
 # 4. Build
 echo ""
-echo -e "${GREEN}Building Image: jetson-yolo:latest (Base: $L4T_VERSION)${NC}"
+echo -e "${GREEN}Building Image: jetson-arducam:latest (Base: $L4T_VERSION)${NC}"
 echo "This may take 15-20 minutes. Please wait..."
 
-if sudo docker build --build-arg L4T_VERSION=$L4T_VERSION -t jetson-yolo:latest .; then
+if sudo docker build --build-arg L4T_VERSION=$L4T_VERSION -t jetson-arducam:latest .; then
     echo ""
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}   Build Complete Successfully!   ${NC}"

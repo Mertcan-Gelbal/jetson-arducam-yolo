@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Basic YOLOv8 Object Detection Example
+General AI Object Detection Example
 Single camera detection with display
+Supports: YOLOv8, YOLOv9, YOLOv11, RT-DETR, etc.
 """
 
 import cv2
