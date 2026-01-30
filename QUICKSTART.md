@@ -4,64 +4,47 @@
 
 *   NVIDIA Jetson device (Orin Nano/NX/AGX)
 *   JetPack 5.x or 6.x
-*   Arducam IMX519 camera(s)
+*   Camera (CSI or USB)
 *   Internet connection
 
-## Installation Steps
+## ⚡ 1-Click Installation
 
-### 1. Setup
-
-Clone the repository and install camera drivers.
+We provide a master setup script that handles drivers, system verification, and Docker environment setup automatically.
 
 ```bash
+# 1. Clone
 git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git
 cd jetson-arducam-yolo
 
-# Install camera drivers (Requires Reboot)
-chmod +x scripts/*.sh
-./scripts/setup_cameras.sh
+# 2. Run Installer
+./install.sh
 ```
 
-### 2. Verify System
+Follow the on-screen instructions. The script will:
+1.  Setup Camera Drivers (CSI/USB)
+2.  Verify System Requirements
+3.  Build AI Environment (Docker)
+4.  Launch the Container
 
-After rebooting, verify that cameras are detected and requirements are met.
+---
+
+## Manual Run (After Installation)
+
+Once installed, you can easily start the system anytime:
 
 ```bash
-cd jetson-arducam-yolo
-./scripts/test_installation.sh
-```
-
-### 3. Build & Run
-
-Build the Docker environment. The script automatically detects your JetPack version.
-
-```bash
-# Build Docker image
-./scripts/build_docker.sh
-
 # Start Container
 ./scripts/run_docker.sh
-```
 
-### 4. Test Detection
-
-Inside the container:
-
-```bash
-# Enter container
+# Run Detection (Inside Container)
 sudo docker exec -it jetson-arducam-ctr bash
-
-# Run basic detection
-python3 examples/basic_detection.py --camera 0 --display
+python3 examples/basic_detection.py --source-type csi
 ```
 
 ## Performance
 
 To enable maximum performance on the host:
-
 ```bash
 sudo nvpmodel -m 0
 sudo jetson_clocks
 ```
-
-For 2-3x faster inference, use the TensorRT example usage in `README.md`.

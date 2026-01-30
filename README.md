@@ -30,22 +30,21 @@ jetson-arducam-ai/
 
 ## 🛠️ Installation
 
-### 1. Setup Drivers
+### Automated Setup (Recommended)
+The master installer orchestrates driver verification, system checks, and Docker builds.
+
 ```bash
 git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git
 cd jetson-arducam-yolo
-./scripts/setup_cameras.sh
+./install.sh
 ```
 
-### 2. Build Environment
-```bash
-./scripts/build_docker.sh
-```
-
-### 3. Start Container
-```bash
-./scripts/run_docker.sh
-```
+### Manual Individual Steps
+If you prefer manual control:
+1.  **Drivers:** `./scripts/setup_cameras.sh`
+2.  **Verify:** `./scripts/test_installation.sh`
+3.  **Build:** `./scripts/build_docker.sh`
+4.  **Run:** `./scripts/run_docker.sh`
 
 ## 🧠 Usage
 
