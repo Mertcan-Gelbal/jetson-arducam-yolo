@@ -216,6 +216,46 @@ This usually happens if `apt` is locked or a package is broken.
    ./scripts/setup_cameras.sh
    ```
 
+### Physical Connection (Ribbon Cable)
+**Symptom:** `v4l2-ctl --list-devices` shows nothing, or `i2cdetect` fails.
+**Common Issue:** The ribbon cable direction is wrong (Very Common!).
+
+**Solution:**
+1. **Jetson Nano/Xavier NX/Orin Nano:** The blue side of the cable usually faces **away** from the heatsink.
+2. **Arducam Camera Side:** Ensure the connector is fully seated.
+3. Check the cable for tears or sharp bends.
+
+### Green/Pink Tint on Image
+**Symptom:** The video feed looks green or pink.
+**Cause:** Missing or permission-locked ISP tuning file (`.isp`).
+
+**Solution:**
+Arducam cameras require specific configuration files for color correction.
+```bash
+# Fix permissions
+sudo chown root:root /var/nvidia/nvcam/settings/camera_overrides.isp
+sudo chmod 664 /var/nvidia/nvcam/settings/camera_overrides.isp
+
+# Restart service
+sudo systemctl restart nvargus-daemon
+```
+
+### Argus Daemon Crash / Timeout
+**Error:** `Infinite timeout on capture` or `Socket error`
+
+**Solution:**
+Sometimes a simple restart isn't enough. Perform a full reset:
+```bash
+# Kill process forcefully
+sudo pkill -9 nvargus-daemon
+
+# Restart service
+sudo systemctl restart nvargus-daemon
+
+# If problem persists, check dmesg
+dmesg | grep -i "imx519"
+```
+
 ## Performance Issues
 
 ### Low FPS (Frames Per Second)
