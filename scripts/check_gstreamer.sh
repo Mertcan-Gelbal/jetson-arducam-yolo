@@ -26,10 +26,18 @@ else
     exit 1
 fi
 
-# 2. Test nvarguscamerasrc plugin
-echo -n "Checking nvarguscamerasrc... "
-if gst-inspect-1.0 nvarguscamerasrc &> /dev/null; then
-    echo -e "${GREEN}FOUND${NC}"
+# 2. Test GStreamer Version & Plugin
+echo -n "Checking GStreamer version... "
+if gst-inspect-1.0 --version &> /dev/null; then
+    GST_VER=$(gst-inspect-1.0 --version | head -n 1 | awk '{print $NF}')
+    echo -e "${GREEN}$GST_VER${NC}"
+    
+    # Version logic
+    if [[ $(echo -e "$GST_VER\n1.20" | sort -V | head -n1) == "1.20" ]]; then
+        echo -e "${GREEN}✓ Modern GStreamer detected (1.20+). Good for new sensors.${NC}"
+    else
+        echo -e "${YELLOW}! Legacy GStreamer detected ($GST_VER). Newer camera sensors might be limited.${NC}"
+    fi
 else
     echo -e "${RED}MISSING${NC}"
     echo "Tip: Reinstall nvidia-l4t-gstreamer or check JetPack installation."

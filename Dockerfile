@@ -1,4 +1,7 @@
-# NOTE: This BASE_IMAGE is auto-updated by scripts/build_docker.sh to match your JetPack version
+# NOTE: This BASE_IMAGE is auto-updated by scripts/build_docker.sh to match:
+# - JetPack 6 (r36) -> Ubuntu 22.04 -> GStreamer 1.20
+# - JetPack 5 (r35) -> Ubuntu 20.04 -> GStreamer 1.16
+# - JetPack 4 (r32) -> Ubuntu 18.04 -> GStreamer 1.14
 ARG BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
 FROM ${BASE_IMAGE}
 

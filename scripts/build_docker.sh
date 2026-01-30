@@ -75,26 +75,26 @@ if [ -f /etc/nv_tegra_release ]; then
     
     echo -e "${GREEN}✓ Detected L4T Release: $L4T_RELEASE${NC}"
     
-    # Smart Mapping Logic
-    # Maps L4T Major versions to best available Docker Base Images
+    # Smart Mapping Logic (L4T -> Ubuntu -> GStreamer)
     if [[ $L4T_RELEASE == 36* ]]; then
-        # JetPack 6.0 (Orin Series - L4T r36.x)
+        # JetPack 6.0 (Ubuntu 22.04 - GStreamer 1.20 Native)
         BASE_IMAGE="nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.3-py3"
-        echo -e "${GREEN}✓ Auto-selected JetPack 6 Base Image${NC}"
+        echo -e "${GREEN}✓ Detected JetPack 6 (Ubuntu 22.04)${NC}"
+        echo -e "${CYAN}  Native GStreamer 1.20+ support available.${NC}"
         
     elif [[ $L4T_RELEASE == 35* ]]; then
-        # JetPack 5.1.x (Orin/Xavier - L4T r35.x)
-        # We use r35.2.1 as it is the most stable pytorch container for JP 5.1+
+        # JetPack 5.1 (Ubuntu 20.04 - GStreamer 1.16)
         BASE_IMAGE="nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3"
-        echo -e "${GREEN}✓ Auto-selected JetPack 5 Base Image${NC}"
+        echo -e "${GREEN}✓ Detected JetPack 5 (Ubuntu 20.04)${NC}"
+        echo -e "${CYAN}  Standard GStreamer 1.16 setup.${NC}"
         
     elif [[ $L4T_RELEASE == 32* ]]; then
-        # JetPack 4.6.x (Nano/TX2 - L4T r32.x)
-        # Warning: This repo is optimized for JP5+, but we try our best.
+        # JetPack 4.6 (Ubuntu 18.04 - GStreamer 1.14)
         BASE_IMAGE="nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3"
-        echo -e "${YELLOW}⚠ Detected legacy JetPack 4.x. Some features may not work.${NC}"
+        echo -e "${YELLOW}⚠ Detected JetPack 4 (Ubuntu 18.04)${NC}"
+        echo -e "${YELLOW}  Legacy GStreamer 1.14. Some new sensors may require patches.${NC}"
     else
-        echo -e "${YELLOW}⚠ Unknown L4T version ($L4T_RELEASE). Using default JetPack 5 image.${NC}"
+        echo -e "${RED}⚠ Unknown L4T version ($L4T_RELEASE). Using safe fallback.${NC}"
     fi
 else
     echo -e "${YELLOW}⚠ L4T version not found (Not a Jetson?). using default image.${NC}"
