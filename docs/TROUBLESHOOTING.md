@@ -157,97 +157,38 @@ This guide covers common issues and their solutions when working with Arducam ca
 ## Docker Issues
 
 ### Docker Build Out of Memory
+**Error:** `CRITICAL WARNING: Total memory (RAM+Swap) is less than 8GB`
+**Error:** `gcc: internal compiler error: Killed (program cc1plus)`
 
-**Symptom:** Build fails with "Killed" or "Out of memory"
+**Solution:**
+The YOLOv8 build process requires significant memory. If you see this error, you **MUST** add swap space.
 
-**Solutions:**
+```bash
+# 1. Disable ZRAM (optional but recommended)
+sudo systemctl disable nvzramconfig
+sudo rmmod zram
 
-1. **Enable swap:**
-   ```bash
-   # Create 8GB swap
-   sudo fallocate -l 8G /swapfile
-   sudo chmod 600 /swapfile
-   sudo mkswap /swapfile
-   sudo swapon /swapfile
-   ```
+# 2. Create 8GB Swap File
+sudo fallocate -l 8G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
 
-2. **Build with memory limits:**
-   ```bash
-   sudo docker build --memory=6g --memory-swap=8g -t yolo_jp512:latest .
-   ```
+# 3. Verify
+free -h
+# You should see 'Swap: 8.0Gi'
+```
 
-3. **Clean Docker cache:**
-   ```bash
-   sudo docker system prune -a
-   ```
+### Docker Service Not Running
+**Error:** `Warning: Docker service is not running`
 
-### Docker Container Can't Access Camera
-
-**Symptom:** Camera works on host but not in container
-
-**Solutions:**
-
-1. **Verify device mapping:**
-   ```bash
-   # List cameras on host
-   ls -l /dev/video*
-   
-   # Run container with explicit device mapping
-   sudo docker run -it --rm \
-     --runtime nvidia \
-     --device=/dev/video0 \
-     --device=/dev/video1 \
-     yolo_jp512:latest \
-     ls -l /dev/video*
-   ```
-
-2. **Use privileged mode (not recommended for production):**
-   ```bash
-   sudo docker run -it --rm \
-     --runtime nvidia \
-     --privileged \
-     -v /dev:/dev \
-     yolo_jp512:latest bash
-   ```
-
-3. **Check container logs:**
-   ```bash
-   sudo docker logs yolo_ctr
-   ```
-
-### NVIDIA Runtime Not Found
-
-**Symptom:** "unknown or invalid runtime name: nvidia"
-
-**Solutions:**
-
-1. **Install nvidia-container-runtime:**
-   ```bash
-   sudo apt-get install nvidia-container-runtime
-   sudo systemctl restart docker
-   ```
-
-2. **Configure Docker daemon:**
-   ```bash
-   sudo nano /etc/docker/daemon.json
-   ```
-   
-   Add:
-   ```json
-   {
-       "runtimes": {
-           "nvidia": {
-               "path": "nvidia-container-runtime",
-               "runtimeArgs": []
-           }
-       },
-       "default-runtime": "nvidia"
-   }
-   ```
-   
-   ```bash
-   sudo systemctl restart docker
-   ```
+**Solution:**
+```bash
+sudo systemctl enable docker
+sudo systemctl start docker
+# Verify
+sudo docker info
+```
 
 ## Performance Issues
 

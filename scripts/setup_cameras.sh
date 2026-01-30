@@ -1,48 +1,67 @@
 #!/bin/bash
 #
-# Arducam Driver Installer
+# Arducam Driver Installer (Smart Error Handling)
 # Downloads official Arducam installer and sets up the selected camera model
 #
 
 set -e
 
-# Supported Camera Models
-CAMERAS=("imx219" "imx477" "imx519" "imx708" "ov9281" "ov7251" "arducam")
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-echo "=================================================="
-echo "   Arducam Driver Installer for NVIDIA Jetson"
-echo "=================================================="
+# Error Handler
+handle_error() {
+    echo -e "${RED}Error occurred in line $1${NC}"
+    if [ "$2" == "wget" ]; then
+        echo "--> Could not download installer. Check your internet connection."
+        echo "    Try: ping -c 1 google.com"
+    elif [ "$2" == "apt" ]; then
+        echo "--> Package installation failed."
+        echo "    Try: sudo apt update --fix-missing"
+    fi
+    exit 1
+}
 
-# Check if running on Jetson
-if [ ! -f /etc/nv_tegra_release ]; then
-    echo "Error: This script must be run on a Jetson device."
+trap 'handle_error $LINENO $BASH_COMMAND' ERR
+
+# Check Connectivity
+echo "Checking internet connectivity..."
+if ! ping -c 1 google.com &> /dev/null; then
+    echo -e "${RED}Error: No internet connection detected.${NC}"
+    echo "Please connect to WiFi or Ethernet and try again."
     exit 1
 fi
 
-# Step 1: Install Dependencies
+# Essential Checks
+if [ ! -f /etc/nv_tegra_release ]; then
+    echo -e "${RED}Error: Not running on NVIDIA Jetson.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}System check passed. Starting installation...${NC}"
+
+# Install Dependencies
 echo "Updating system dependencies..."
 sudo apt update
 sudo apt install -y wget curl i2c-tools v4l-utils
 
-# Step 2: Download Official Installer
+# Download Official Installer
 echo "Downloading Arducam installer..."
 cd ~
-if [ -f install_full.sh ]; then
-    rm install_full.sh
-fi
-wget -q https://github.com/ArduCAM/MIPI_Camera/releases/download/v0.0.3/install_full.sh
+rm -f install_full.sh
+wget -O install_full.sh https://github.com/ArduCAM/MIPI_Camera/releases/download/v0.0.3/install_full.sh
 chmod +x install_full.sh
 
-# Step 3: Select Camera Model
+# Camera Selection
 MODEL=""
-
-# Check if model passed as argument (e.g. ./setup_cameras.sh imx519)
 if [ ! -z "$1" ]; then
     MODEL=$1
 else
-    # Interactive Menu
     echo ""
-    echo "Select your camera model:"
+    echo -e "${YELLOW}Select your camera model:${NC}"
     echo "  1) IMX219 (Raspberry Pi V2)"
     echo "  2) IMX477 (Raspberry Pi HQ)"
     echo "  3) IMX519 (16MP Arducam)"
@@ -50,8 +69,7 @@ else
     echo "  5) OV9281 (Global Shutter)"
     echo "  6) OV7251 (Global Shutter)"
     echo ""
-    read -p "Enter number [3 for IMX519]: " CHOICE
-    
+    read -p "Enter number [3]: " CHOICE
     case $CHOICE in
         1) MODEL="imx219" ;;
         2) MODEL="imx477" ;;
@@ -59,27 +77,24 @@ else
         4) MODEL="imx708" ;;
         5) MODEL="ov9281" ;;
         6) MODEL="ov7251" ;;
-        *) MODEL="imx519" ;; # Default
+        *) MODEL="imx519" ;;
     esac
 fi
 
-# Step 4: Install Driver
+# Install
 echo ""
-echo "Installing driver for: $MODEL"
-echo "Running: sudo ./install_full.sh -m $MODEL"
-echo ""
-
+echo -e "${GREEN}Installing driver for: $MODEL${NC}"
 sudo ./install_full.sh -m $MODEL
 
-# Step 5: Post-Install Actions
-echo ""
-echo "=================================================="
-echo "   Installation Complete"
-echo "=================================================="
-echo "A system reboot is required to activate the camera driver."
-read -p "Reboot now? (y/N): " REBOOT
-if [[ $REBOOT =~ ^[Yy]$ ]]; then
-    sudo reboot
+if [ $? -eq 0 ]; then
+    echo ""
+    echo -e "${GREEN}✓ Installation Successful!${NC}"
+    echo -e "${YELLOW}A system reboot is required.${NC}"
+    read -p "Reboot now? (y/N): " REBOOT
+    if [[ $REBOOT =~ ^[Yy]$ ]]; then
+        sudo reboot
+    fi
 else
-    echo "Please reboot manually using 'sudo reboot' before testing."
+    echo -e "${RED}Driver installation failed.${NC}"
+    echo "Please check the error messages above."
 fi
