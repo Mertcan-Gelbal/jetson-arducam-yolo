@@ -10,15 +10,14 @@ from ultralytics import YOLO
 import argparse
 
 
-def get_l4t_version():
-    """Detect L4T version from system"""
-    try:
-        with open('/etc/nv_tegra_release', 'r') as f:
-            line = f.readline()
-            # Extract major version
-            return int(line.split()[1].split('.')[0])
-    except:
-        return 35 # Default to JP 5
+def get_gst_compatibility():
+    """Detect GStreamer compatibility mode from ENV or system"""
+    compat = os.environ.get('GST_VERSION_COMPAT', 'modern')
+    l4t_version = get_l4t_version()
+    
+    if l4t_version < 35:
+        return 'legacy'
+    return compat
 
 def create_gstreamer_pipeline(
     sensor_id=0,
@@ -29,11 +28,15 @@ def create_gstreamer_pipeline(
     framerate=30,
     flip_method=0
 ):
-    l4t_version = get_l4t_version()
+    compat_mode = get_gst_compatibility()
     
-    # Adapt format based on L4T version
-    # JetPack 6 (r36) can be more sensitive to color formats
-    pixel_format = "NV12" if l4t_version >= 36 else "NV12"
+    # Adapt format based on compatibility mode
+    pixel_format = "NV12" # Standard for Jetson
+    
+    # Modern JetPack 6 (r36) / GStreamer 1.20 might require specific appsink settings
+    appsink_extras = "drop=1"
+    if compat_mode == 'modern':
+        appsink_extras = "drop=1, max-buffers=1"
     
     return (
         f"nvarguscamerasrc sensor-id={sensor_id} ! "
@@ -45,7 +48,7 @@ def create_gstreamer_pipeline(
         f"format=(string)BGRx ! "
         f"videoconvert ! "
         f"video/x-raw, format=(string)BGR ! "
-        f"appsink drop=1"
+        f"appsink {appsink_extras}"
     )
 
 

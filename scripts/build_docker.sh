@@ -104,9 +104,19 @@ echo "Selected Base Image: $BASE_IMAGE"
 
 # Update Dockerfile to match system (Transparency for User)
 if [ -f Dockerfile ]; then
-    echo "Updating Dockerfile default to match system..."
-    # Use | delimiter for sed because image ID contains slashes /
+    echo "Fine-tuning Dockerfile for GStreamer $GST_VER..."
+    # 1. Update Base Image
     sed -i "s|ARG BASE_IMAGE=.*|ARG BASE_IMAGE=$BASE_IMAGE|g" Dockerfile
+    
+    # 2. Inject Compatibility Tweaks (Optional intervention)
+    if [[ $(echo -e "$GST_VER\n1.20" | sort -V | head -n1) == "$GST_VER" && "$GST_VER" != "1.20" ]]; then
+        # For GStreamer < 1.20, we may need specific ENV fixes
+        sed -i "/ENV GST_VERSION_COMPAT/d" Dockerfile
+        sed -i "/WORKDIR \/app/a ENV GST_VERSION_COMPAT=legacy" Dockerfile
+    else
+        sed -i "/ENV GST_VERSION_COMPAT/d" Dockerfile
+        sed -i "/WORKDIR \/app/a ENV GST_VERSION_COMPAT=modern" Dockerfile
+    fi
 fi
 
 # 4. Build
