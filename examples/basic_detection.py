@@ -12,24 +12,42 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(description='YOLOv8 Basic Detection')
-    parser.add_argument('--camera', type=int, default=0, help='Camera device ID')
-    parser.add_argument('--model', type=str, default='yolov8n.pt', help='Model path')
-    parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold')
-    parser.add_argument('--iou', type=float, default=0.45, help='IOU threshold')
-    parser.add_argument('--imgsz', type=int, default=640, help='Input size')
-    parser.add_argument('--display', action='store_true', help='Display results')
+    parser.add_argument('--source-type', type=str, default='csi', choices=['csi', 'usb'], help='Camera type: csi or usb')
+    parser.add_argument('--width', type=int, default=1280, help='Camera width')
+    parser.add_argument('--height', type=int, default=720, help='Camera height')
     args = parser.parse_args()
 
-    # Load YOLOv8 model
+    # Load YOLO Model
     print(f"Loading model: {args.model}")
     model = YOLO(args.model)
     
-    # Open camera
-    print(f"Opening camera {args.camera}")
-    cap = cv2.VideoCapture(args.camera)
+    # Initialize Camera
+    print(f"Opening {args.source_type.upper()} camera {args.camera}...")
     
+    if args.source_type == 'usb':
+        # USB Camera: Standard V4L2
+        cap = cv2.VideoCapture(args.camera)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    else:
+        # CSI Camera: GStreamer Pipeline (Hardware Accelerated)
+        gst_pipeline = (
+            f"nvarguscamerasrc sensor-id={args.camera} ! "
+            f"video/x-raw(memory:NVMM), width={args.width}, height={args.height}, framerate=30/1 ! "
+            f"nvvidconv flip-method=0 ! "
+            f"video/x-raw, width={args.width}, height={args.height}, format=BGRx ! "
+            f"videoconvert ! "
+            f"video/x-raw, format=BGR ! appsink"
+        )
+        print(f"Pipeline: {gst_pipeline}")
+        cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+
     if not cap.isOpened():
-        print(f"Error: Could not open camera {args.camera}")
+        print(f"Error: Could not open {args.source_type} camera {args.camera}")
+        if args.source_type == 'csi':
+            print("Tip: Check ribbon cable? Try running scripts/setup_cameras.sh")
+        else:
+            print("Tip: Check USB connection? Try lsusage")
         return
     
     # Get camera properties

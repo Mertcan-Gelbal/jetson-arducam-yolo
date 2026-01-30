@@ -256,7 +256,19 @@ sudo systemctl restart nvargus-daemon
 dmesg | grep -i "imx519"
 ```
 
-## Performance Issues
+### USB Camera Issues
+**Symptom:** `No space left on device` (not disk space) or `select timeout`
+**Cause:** USB Bandwidth Limit exceeded.
+
+**Solution:**
+1. **Use USB 3.0 Port:** Ensure you are not using a cheap USB 2.0 hub.
+2. **Increase USBSFS Memory Limit:**
+   ```bash
+   # Add this to /boot/extlinux/extlinux.conf kernel args
+   usbcore.usbfs_memory_mb=1000
+   ```
+3. **Use Compressed Format:**
+   USB bandwidth is limited for Raw YUYV. Force MJPEG in code if supported.
 
 ### Low FPS (Frames Per Second)
 
@@ -520,16 +532,16 @@ v4l2-ctl -d /dev/video0 --set-fmt-video=width=1920,height=1080 \
 
 ```bash
 # Container logs
-sudo docker logs -f yolo_ctr
+sudo docker logs -f jetson-arducam-ctr
 
 # Execute commands in container
-sudo docker exec -it yolo_ctr bash
+sudo docker exec -it jetson-arducam-ctr bash
 
 # Check container resource usage
-sudo docker stats yolo_ctr
+sudo docker stats jetson-arducam-ctr
 
 # Inspect container
-sudo docker inspect yolo_ctr
+sudo docker inspect jetson-arducam-ctr
 ```
 
 ### GStreamer Debugging

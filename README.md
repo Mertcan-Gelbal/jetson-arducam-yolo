@@ -5,10 +5,10 @@ A flexible, production-ready environment for running modern Computer Vision mode
 ## 🚀 Features
 
 *   **Universal Model Support:** Run any model supported by Ultralytics and PyTorch (Object Detection, Segmentation, Pose Estimation, Classification).
-*   **Dynamic Platform:** Automatically adapts to JetPack 5.x or 6.x and selects the optimal L4T base image.
-*   **Arducam Ecosystem:** Built-in driver installer for the entire ISP camera lineup (IMX519, IMX477, IMX219, IMX708, Global Shutter).
-*   **Hardware Acceleration:** Optimized GStreamer pipelines utilizing Jetson's ISP and NVDEC engines.
-*   **TensorRT Ready:** Tools to convert any supported model to TensorRT for maximum inference speed (2-3x boost).
+*   **Dynamic Platform:** Automatically adapts to JetPack 5.x or 6.x.
+*   **Dual Camera Support:** Full support for both **CSI/MIPI** (Arducam IMX series) and **USB Webcams** (Logitech, Intel Realsense).
+*   **Hardware Acceleration:** Optimized GStreamer pipelines for CSI and V4L2 for USB.
+*   **TensorRT Ready:** Tools to convert any supported model to TensorRT.
 
 ## 📂 Project Structure
 
