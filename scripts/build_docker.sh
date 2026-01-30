@@ -91,6 +91,13 @@ fi
 
 echo "Selected Base Image: $BASE_IMAGE"
 
+# Update Dockerfile to match system (Transparency for User)
+if [ -f Dockerfile ]; then
+    echo "Updating Dockerfile default to match system..."
+    # Use | delimiter for sed because image ID contains slashes /
+    sed -i "s|ARG BASE_IMAGE=.*|ARG BASE_IMAGE=$BASE_IMAGE|g" Dockerfile
+fi
+
 # 4. Build
 echo ""
 echo -e "${GREEN}Building Image: jetson-arducam:latest (Base: $BASE_IMAGE)${NC}"

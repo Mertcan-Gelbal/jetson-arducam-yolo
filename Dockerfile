@@ -1,3 +1,4 @@
+# NOTE: This BASE_IMAGE is auto-updated by scripts/build_docker.sh to match your JetPack version
 ARG BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
 FROM ${BASE_IMAGE}
 
