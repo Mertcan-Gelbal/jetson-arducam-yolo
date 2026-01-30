@@ -1,37 +1,37 @@
 # Jetson Arducam AI Kit
 
-A flexible, production-ready environment for running modern Computer Vision models (YOLOv8, YOLOv11, RT-DETR, EfficientNet, etc.) with Arducam hardware on NVIDIA Jetson.
+A flexible, production-ready environment for running modern Computer Vision models (YOLOv8, YOLOv11, RT-DETR, EfficientNet, etc.) with Arducam hardware on NVIDIA Jetson devices.
 
-## 🚀 Features
+## Features
 
 *   **Universal Model Support:** Run any model supported by Ultralytics and PyTorch (Object Detection, Segmentation, Pose Estimation, Classification).
-*   **Dynamic Platform:** Automatically adapts to JetPack 5.x or 6.x.
-*   **Dual Camera Support:** Full support for both **CSI/MIPI** (Arducam IMX series) and **USB Webcams** (Logitech, Intel Realsense).
-*   **Hardware Acceleration:** Optimized GStreamer pipelines for CSI and V4L2 for USB.
-*   **TensorRT Ready:** Tools to convert any supported model to TensorRT.
+*   **Dynamic Platform:** Automatically adapts base images for JetPack 5.x or 6.x systems.
+*   **Dual Camera Support:** Full support for both **CSI/MIPI** (Arducam IMX series) and **USB Webcams** (Logitech, Intel Realsense, etc.).
+*   **Hardware Acceleration:** Optimized GStreamer pipelines for CSI cameras and V4L2 for USB devices.
+*   **TensorRT Ready:** Included tools to convert any supported model to TensorRT for maximum inference speed.
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 jetson-arducam-ai/
-├── Dockerfile                  # Generic AI environment (PyTorch + Ultralytics)
+├── install.sh                  # Master installer (Drivers -> System Check -> Docker Build)
+├── Dockerfile                  # AI environment definition (Auto-updates to match system)
 ├── scripts/
-│   ├── build_docker.sh         # Builds 'jetson-arducam' image
-│   ├── run_docker.sh           # Runs 'jetson-arducam-ctr' container
-│   ├── setup_cameras.sh        # Universal camera driver installer
-│   └── test_installation.sh    # System diagnostics
+│   ├── setup_cameras.sh        # Camera driver wizard (CSI & USB)
+│   ├── build_docker.sh         # Smart Docker builder
+│   ├── run_docker.sh           # Container launcher with hardware access
+│   └── test_installation.sh    # System verification tool
 ├── examples/
-│   ├── basic_detection.py      # Inference demo (supports all YOLO versions)
+│   ├── basic_detection.py      # Main inference script (supports USB & CSI)
 │   ├── multi_camera_detection.py # Multi-stream threading example
-│   ├── gstreamer_pipeline.py   # Low-latency ISP pipeline
-│   └── tensorrt_export.py      # Model optimizer
-└── docs/                       # Guides for Installation, Usage & Troubleshooting
+│   └── tensorrt_export.py      # Model optimization tool
+└── docs/                       # Detailed documentation
 ```
 
-## 🛠️ Installation
+## Installation
 
 ### Automated Setup (Recommended)
-The master installer orchestrates driver verification, system checks, and Docker builds.
+The master installer orchestrates driver verification, system compatibility checks, and Docker image creation in a single workflow.
 
 ```bash
 git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git
@@ -39,58 +39,69 @@ cd jetson-arducam-yolo
 ./install.sh
 ```
 
-### Manual Individual Steps
-If you prefer manual control:
-1.  **Drivers:** `./scripts/setup_cameras.sh`
-2.  **Verify:** `./scripts/test_installation.sh`
-3.  **Build:** `./scripts/build_docker.sh`
-4.  **Run:** `./scripts/run_docker.sh`
+### Manual Steps
+If you prefer granular control over the installation process:
 
-## 🧠 Usage
+1.  **Drivers:** `./scripts/setup_cameras.sh` - Installs camera drivers or verifies USB connection.
+2.  **Verify:** `./scripts/test_installation.sh` - Checks system health and requirements.
+3.  **Build:** `./scripts/build_docker.sh` - Creates the Docker environment specific to your JetPack version.
+4.  **Run:** `./scripts/run_docker.sh` - Starts the container with hardware passthrough.
 
-The environment supports the entire Ultralytics ecosystem. You can swap models easily.
+## Usage
 
-### Running Different Models
+The environment accepts standard Ultralytics commands and our custom Python wrappers.
+
+### Basic Inference
 
 ```bash
-# Enter container
+# 1. Enter the container
 sudo docker exec -it jetson-arducam-ctr bash
 
-# YOLOv8 Nano (Fastest)
+# 2. Run Object Detection (CSI Camera - Default)
 python3 examples/basic_detection.py --model yolov8n.pt
 
-# YOLOv8 Medium (Better Accuracy)
-python3 examples/basic_detection.py --model yolov8m.pt
+# 3. Run Object Detection (USB Webcam)
+python3 examples/basic_detection.py --model yolov8n.pt --source-type usb --camera 0
+```
 
+### Advanced Models
+
+You can easily swap models to test accuracy vs. speed trade-offs:
+
+```bash
 # YOLOv11 (New SOTA)
 python3 examples/basic_detection.py --model yolo11n.pt
 
-# RT-DETR (Transformer)
+# RT-DETR (Transformer-based)
 python3 examples/basic_detection.py --model rtdetr-l.pt
 ```
 
-### Multi-Camera (Stereo/Array)
-Support for synchronized processing of multiple camera streams:
-```bash
-python3 examples/multi_camera_detection.py --cameras 0 1
-```
+## Performance Optimization
 
-## ⚡ Performance
+To achieve real-time performance on Jetson edge devices:
 
-To unlock full performance on Jetson:
-
-1.  **Maximize Clocks:** `sudo nvpmodel -m 0 && sudo jetson_clocks`
-2.  **Use TensorRT:**
+1.  **Maximize System Clocks:**
     ```bash
-    # Convert any model
+    sudo nvpmodel -m 0
+    sudo jetson_clocks
+    ```
+
+2.  **Use TensorRT Acceleration:**
+    Convert PyTorch models to TensorRT engines for 2-3x faster inference.
+    ```bash
+    # Convert
     python3 examples/tensorrt_export.py --model yolo11n.pt --export
     
-    # Run optimized model
+    # Run
     python3 examples/basic_detection.py --model yolo11n.engine
     ```
 
-## 🤝 Support
-Open an issue for bugs or feature requests. See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for help.
+## Support
+
+For detailed guides and troubleshooting, refer to the `docs/` directory:
+*   [Installation Guide](docs/INSTALLATION.md)
+*   [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+*   [Check GitHub Issues](https://github.com/Mertcan-Gelbal/jetson-arducam-yolo/issues)
 
 ## License
 MIT License.
