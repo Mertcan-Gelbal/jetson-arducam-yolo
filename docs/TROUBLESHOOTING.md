@@ -121,6 +121,18 @@ This guide covers common issues and their solutions when working with Arducam ca
    done
    ```
 
+### JetPack Version Compatibility (r35 vs r36)
+**Symptom:** Pipeline fails on JetPack 6 but works on JetPack 5 (or vice versa).
+**Cause:** Changes in GStreamer buffer management and memory types between L4T versions.
+
+**Solution:**
+1. **Run the Diagnostic Tool:**
+   ```bash
+   ./scripts/check_gstreamer.sh
+   ```
+2. **Force Format:** JetPack 6 often requires strict `NV12` or `YV12` definitions.
+3. **Memory Buffers:** In Docker, ensure `--shm-size=2g` is used (our scripts handle this).
+
 ### GStreamer Pipeline Errors
 
 **Symptom:** `gst-launch-1.0` fails with errors

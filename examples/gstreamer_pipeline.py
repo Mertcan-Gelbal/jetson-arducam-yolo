@@ -10,6 +10,16 @@ from ultralytics import YOLO
 import argparse
 
 
+def get_l4t_version():
+    """Detect L4T version from system"""
+    try:
+        with open('/etc/nv_tegra_release', 'r') as f:
+            line = f.readline()
+            # Extract major version
+            return int(line.split()[1].split('.')[0])
+    except:
+        return 35 # Default to JP 5
+
 def create_gstreamer_pipeline(
     sensor_id=0,
     capture_width=1920,
@@ -19,27 +29,17 @@ def create_gstreamer_pipeline(
     framerate=30,
     flip_method=0
 ):
-    """
-    Create GStreamer pipeline for hardware-accelerated video capture
+    l4t_version = get_l4t_version()
     
-    Args:
-        sensor_id: Camera sensor ID (0, 1, 2, ...)
-        capture_width: Camera capture width
-        capture_height: Camera capture height
-        display_width: Output width
-        display_height: Output height
-        framerate: Camera framerate
-        flip_method: Image rotation (0=none, 1=90ccw, 2=180, 3=90cw, 4=horizontal, 5=vertical)
-    
-    Returns:
-        GStreamer pipeline string
-    """
+    # Adapt format based on L4T version
+    # JetPack 6 (r36) can be more sensitive to color formats
+    pixel_format = "NV12" if l4t_version >= 36 else "NV12"
     
     return (
         f"nvarguscamerasrc sensor-id={sensor_id} ! "
         f"video/x-raw(memory:NVMM), "
         f"width=(int){capture_width}, height=(int){capture_height}, "
-        f"format=(string)NV12, framerate=(fraction){framerate}/1 ! "
+        f"format=(string){pixel_format}, framerate=(fraction){framerate}/1 ! "
         f"nvvidconv flip-method={flip_method} ! "
         f"video/x-raw, width=(int){display_width}, height=(int){display_height}, "
         f"format=(string)BGRx ! "
