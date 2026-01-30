@@ -43,8 +43,11 @@ jetson-arducam-yolo/
 git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git
 cd jetson-arducam-yolo
 
-# Install Drivers
+# Install Drivers (Interactive Menu)
 ./scripts/setup_cameras.sh
+
+# Or install specific driver directly
+# ./scripts/setup_cameras.sh imx477
 
 # Build (Auto-detects JetPack version)
 ./scripts/build_docker.sh

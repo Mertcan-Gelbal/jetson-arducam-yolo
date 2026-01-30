@@ -1,99 +1,85 @@
 #!/bin/bash
 #
-# Arducam Camera Setup Script for NVIDIA Jetson
-# Automates camera driver installation and verification
+# Arducam Driver Installer
+# Downloads official Arducam installer and sets up the selected camera model
 #
 
-set -e  # Exit on error
+set -e
 
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Supported Camera Models
+CAMERAS=("imx219" "imx477" "imx519" "imx708" "ov9281" "ov7251" "arducam")
 
 echo "=================================================="
-echo "   Arducam IMX519 Camera Setup for Jetson"
+echo "   Arducam Driver Installer for NVIDIA Jetson"
 echo "=================================================="
-echo ""
 
 # Check if running on Jetson
 if [ ! -f /etc/nv_tegra_release ]; then
-    echo -e "${RED}Error: This script must be run on a Jetson device${NC}"
+    echo "Error: This script must be run on a Jetson device."
     exit 1
 fi
 
-echo -e "${GREEN}✓ Running on Jetson device${NC}"
-
-# Display Jetson info
-echo ""
-echo "System Information:"
-cat /etc/nv_tegra_release
-echo ""
-
-# Step 1: Update system packages
-echo "Step 1: Updating system packages..."
+# Step 1: Install Dependencies
+echo "Updating system dependencies..."
 sudo apt update
 sudo apt install -y wget curl i2c-tools v4l-utils
 
-echo -e "${GREEN}✓ System packages updated${NC}"
-echo ""
-
-# Step 2: Download Arducam installer
-echo "Step 2: Downloading Arducam installer..."
+# Step 2: Download Official Installer
+echo "Downloading Arducam installer..."
 cd ~
-
-if [ ! -f install_full.sh ]; then
-    wget https://github.com/ArduCAM/MIPI_Camera/releases/download/v0.0.3/install_full.sh
-    chmod +x install_full.sh
-    echo -e "${GREEN}✓ Installer downloaded${NC}"
-else
-    echo -e "${YELLOW}Installer already exists${NC}"
+if [ -f install_full.sh ]; then
+    rm install_full.sh
 fi
-echo ""
+wget -q https://github.com/ArduCAM/MIPI_Camera/releases/download/v0.0.3/install_full.sh
+chmod +x install_full.sh
 
-# Step 3: List available cameras
-echo "Step 3: Available camera modules:"
-./install_full.sh -l
-echo ""
+# Step 3: Select Camera Model
+MODEL=""
 
-# Step 4: Check if IMX519 is already installed
-echo "Step 4: Checking for existing IMX519 installation..."
-if dmesg | grep -q imx519; then
-    echo -e "${YELLOW}IMX519 driver appears to be already installed${NC}"
-    read -p "Reinstall? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Skipping installation..."
-    else
-        echo "Installing IMX519 driver..."
-        sudo ./install_full.sh -m imx519
-    fi
+# Check if model passed as argument (e.g. ./setup_cameras.sh imx519)
+if [ ! -z "$1" ]; then
+    MODEL=$1
 else
-    echo "Installing IMX519 driver..."
-    sudo ./install_full.sh -m imx519
+    # Interactive Menu
+    echo ""
+    echo "Select your camera model:"
+    echo "  1) IMX219 (Raspberry Pi V2)"
+    echo "  2) IMX477 (Raspberry Pi HQ)"
+    echo "  3) IMX519 (16MP Arducam)"
+    echo "  4) IMX708 (Raspberry Pi V3)"
+    echo "  5) OV9281 (Global Shutter)"
+    echo "  6) OV7251 (Global Shutter)"
+    echo ""
+    read -p "Enter number [3 for IMX519]: " CHOICE
+    
+    case $CHOICE in
+        1) MODEL="imx219" ;;
+        2) MODEL="imx477" ;;
+        3) MODEL="imx519" ;;
+        4) MODEL="imx708" ;;
+        5) MODEL="ov9281" ;;
+        6) MODEL="ov7251" ;;
+        *) MODEL="imx519" ;; # Default
+    esac
 fi
 
+# Step 4: Install Driver
 echo ""
-echo -e "${GREEN}✓ Camera driver installation complete${NC}"
+echo "Installing driver for: $MODEL"
+echo "Running: sudo ./install_full.sh -m $MODEL"
 echo ""
 
-# Ask about reboot
-echo -e "${YELLOW}System reboot is required for camera driver to load${NC}"
-read -p "Reboot now? (y/N): " -n 1 -r
-echo
+sudo ./install_full.sh -m $MODEL
 
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "Rebooting in 3 seconds..."
-    sleep 3
+# Step 5: Post-Install Actions
+echo ""
+echo "=================================================="
+echo "   Installation Complete"
+echo "=================================================="
+echo "A system reboot is required to activate the camera driver."
+read -p "Reboot now? (y/N): " REBOOT
+if [[ $REBOOT =~ ^[Yy]$ ]]; then
     sudo reboot
 else
-    echo ""
-    echo -e "${YELLOW}Please reboot manually with: sudo reboot${NC}"
-    echo ""
-    echo "After reboot, run: ./scripts/test_installation.sh"
+    echo "Please reboot manually using 'sudo reboot' before testing."
 fi
-
-echo ""
-echo "=================================================="
-echo "   Camera Setup Complete"
-echo "=================================================="
