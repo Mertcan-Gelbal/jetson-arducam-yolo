@@ -53,27 +53,50 @@ if [ $TOTAL_AVAIL -lt 8000 ]; then
     fi
 fi
 
-# 3. Detect JetPack Version
+# 3. Detect JetPack Version & Select Base Image
 echo ""
-echo "Detecting L4T Version..."
+echo "Detecting System Version..."
+BASE_IMAGE="nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3" # Default fallback
+
 if [ -f /etc/nv_tegra_release ]; then
     L4T_STRING=$(head -n 1 /etc/nv_tegra_release)
     L4T_RELEASE=$(echo $L4T_STRING | cut -f 2 -d ' ' | grep -oE '[0-9.]+')
-    L4T_REVISION=$(echo $L4T_STRING | cut -f 2 -d ',' | grep -oE '[0-9.]+')
     
-    L4T_VERSION="r$L4T_RELEASE.$L4T_REVISION"
-    echo -e "${GREEN}✓ Detected: $L4T_VERSION${NC}"
+    echo -e "${GREEN}✓ Detected L4T Release: $L4T_RELEASE${NC}"
+    
+    # Smart Mapping Logic
+    # Maps L4T Major versions to best available Docker Base Images
+    if [[ $L4T_RELEASE == 36* ]]; then
+        # JetPack 6.0 (Orin Series - L4T r36.x)
+        BASE_IMAGE="nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.3-py3"
+        echo -e "${GREEN}✓ Auto-selected JetPack 6 Base Image${NC}"
+        
+    elif [[ $L4T_RELEASE == 35* ]]; then
+        # JetPack 5.1.x (Orin/Xavier - L4T r35.x)
+        # We use r35.2.1 as it is the most stable pytorch container for JP 5.1+
+        BASE_IMAGE="nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3"
+        echo -e "${GREEN}✓ Auto-selected JetPack 5 Base Image${NC}"
+        
+    elif [[ $L4T_RELEASE == 32* ]]; then
+        # JetPack 4.6.x (Nano/TX2 - L4T r32.x)
+        # Warning: This repo is optimized for JP5+, but we try our best.
+        BASE_IMAGE="nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3"
+        echo -e "${YELLOW}⚠ Detected legacy JetPack 4.x. Some features may not work.${NC}"
+    else
+        echo -e "${YELLOW}⚠ Unknown L4T version ($L4T_RELEASE). Using default JetPack 5 image.${NC}"
+    fi
 else
-    echo -e "${YELLOW}Warning: L4T version not found. Defaulting to r35.4.1${NC}"
-    L4T_VERSION="r35.4.1"
+    echo -e "${YELLOW}⚠ L4T version not found (Not a Jetson?). using default image.${NC}"
 fi
+
+echo "Selected Base Image: $BASE_IMAGE"
 
 # 4. Build
 echo ""
-echo -e "${GREEN}Building Image: jetson-arducam:latest (Base: $L4T_VERSION)${NC}"
+echo -e "${GREEN}Building Image: jetson-arducam:latest (Base: $BASE_IMAGE)${NC}"
 echo "This may take 15-20 minutes. Please wait..."
 
-if sudo docker build --build-arg L4T_VERSION=$L4T_VERSION -t jetson-arducam:latest .; then
+if sudo docker build --build-arg BASE_IMAGE=$BASE_IMAGE -t jetson-arducam:latest .; then
     echo ""
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}   Build Complete Successfully!   ${NC}"
