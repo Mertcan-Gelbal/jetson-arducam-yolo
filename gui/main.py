@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Jetson Arducam AI Kit - Modern Professional Application
+Jetson AI Studio - Ultimate Edition
 """
 import sys
 import os
@@ -8,353 +8,281 @@ import psutil
 import subprocess
 import cv2
 import time
+import platform
 import numpy as np
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QStackedWidget, QFrame,
-    QScrollArea, QGridLayout, QTextEdit, QMessageBox, QComboBox,
-    QSizePolicy, QLayout, QInputDialog, QStyle, QSizeGrip, QGraphicsDropShadowEffect
+    QScrollArea, QGridLayout, QMessageBox, QComboBox,
+    QSizePolicy, QLayout, QFileDialog, QGraphicsDropShadowEffect, QSizeGrip
 )
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect, QEvent
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect, QPropertyAnimation, QEasingCurve
+from PyQt5.QtGui import QColor, QFont, QIcon, QImage, QPixmap
 
 # =============================================================================
-# STYLES & ASSETS
+# THEMES & STYLES (Light/Dark Mode Engine)
 # =============================================================================
 
-GLOBAL_STYLES = """
-/* Main Application */
-QMainWindow { background-color: #121212; color: #E0E0E0; }
+class Theme:
+    DARK = {
+        "bg": "#121212", "sidebar": "#181818", "card": "#1e1e1e",
+        "text": "#E0E0E0", "text_sec": "#A0A0A0", "accent": "#76b900",
+        "border": "#333", "danger": "#cf6679", "input": "#2c2c2c"
+    }
+    LIGHT = {
+        "bg": "#f5f5f7", "sidebar": "#ffffff", "card": "#ffffff",
+        "text": "#1d1d1f", "text_sec": "#86868b", "accent": "#0071e3",
+        "border": "#e5e5e5", "danger": "#ff3b30", "input": "#f0f0f0"
+    }
 
-/* Scrollbars - Minimal/Hidden look */
-QScrollBar:vertical {
-    border: none;
-    background: #1e1e1e;
-    width: 8px;
-    border-radius: 4px;
-}
-QScrollBar::handle:vertical {
-    background: #333;
-    min-height: 20px;
-    border-radius: 4px;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    border: none;
-    background: none;
-}
+def get_stylesheet(theme):
+    return f"""
+    QMainWindow {{ background-color: {theme['bg']}; color: {theme['text']}; }}
+    QWidget {{ font-family: 'Segoe UI', 'Roboto', sans-serif; }}
+    
+    /* Sidebar */
+    QFrame#Sidebar {{ background-color: {theme['sidebar']}; border-right: 1px solid {theme['border']}; }}
+    QPushButton#NavButton {{
+        text-align: left; padding: 12px 20px; border: none; border-radius: 8px;
+        color: {theme['text_sec']}; font-weight: 500; font-size: 14px; background: transparent;
+    }}
+    QPushButton#NavButton:hover {{ background-color: {theme['input']}; color: {theme['text']}; }}
+    QPushButton#NavButton:checked {{ background-color: {theme['input']}; color: {theme['accent']}; font-weight: bold; }}
 
-/* Cards */
-QFrame#Card {
-    background-color: #1e1e1e;
-    border: 1px solid #333;
-    border-radius: 12px;
-}
-QFrame#Card:hover {
-    border-color: #76b900;
-}
+    /* Cards - Clean, No Borders on labels */
+    QFrame#Card, QFrame#AddCard {{
+        background-color: {theme['card']};
+        border: 1px solid {theme['border']};
+        border-radius: 12px;
+    }}
+    QFrame#AddCard {{ border-style: dashed; }}
+    QFrame#AddCard:hover {{ border-color: {theme['accent']}; }}
+    
+    QLabel {{ border: none; background: transparent; color: {theme['text']}; }}
+    QLabel#SecondaryText {{ color: {theme['text_sec']}; font-size: 13px; }}
+    
+    /* Buttons */
+    QPushButton {{
+        background-color: {theme['input']}; color: {theme['text']};
+        border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600;
+    }}
+    QPushButton:hover {{ background-color: {theme['border']}; }}
+    QPushButton#PrimaryButton {{ background-color: {theme['accent']}; color: #fff; }}
+    QPushButton#PrimaryButton:hover {{ opacity: 0.9; }}
+    QPushButton#DangerButton {{ background-color: {theme['danger']}; color: #fff; }}
 
-/* Buttons */
-QPushButton {
-    background-color: #2c2c2c;
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 6px;
-    font-weight: 600;
-}
-QPushButton:hover { background-color: #3d3d3d; }
-QPushButton#PrimaryButton { background-color: #76b900; color: #000; }
-QPushButton#PrimaryButton:hover { background-color: #6a9e00; }
-QPushButton#DangerButton { background-color: #cf6679; color: #000; }
-
-/* Add Card */
-QFrame#AddCard {
-    background-color: rgba(255, 255, 255, 0.05);
-    border: 2px dashed #444;
-    border-radius: 12px;
-}
-QFrame#AddCard:hover {
-    background-color: rgba(255, 255, 255, 0.08);
-    border-color: #76b900;
-}
-"""
+    /* Inputs & Combos */
+    QComboBox, QLineEdit {{
+        background-color: {theme['input']}; border: 1px solid {theme['border']};
+        border-radius: 6px; padding: 8px; color: {theme['text']};
+    }}
+    QScrollArea {{ border: none; background: transparent; }}
+    """
 
 # =============================================================================
 # WORKER THREADS
 # =============================================================================
 
 class VideoThread(QThread):
-    change_pixmap_signal = pyqtSignal(np.ndarray)
-    
-    def __init__(self, sensor_id=0):
-        super().__init__()
-        self._run_flag = True
-        self.sensor_id = sensor_id
-        # Optimized GStreamer Pipeline
-        self.gst_pipeline = (
-            f"nvarguscamerasrc sensor-id={sensor_id} ! "
-            "video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, format=(string)NV12, framerate=(fraction)30/1 ! "
-            "nvvidconv ! video/x-raw, format=(string)BGRx ! "
-            "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
-        )
-
+    change_pixmap = pyqtSignal(np.ndarray)
+    def __init__(self, src): super().__init__(); self.src = src; self.running = True
     def run(self):
-        cap = cv2.VideoCapture(self.gst_pipeline, cv2.CAP_GSTREAMER)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(self.sensor_id)
-        
-        while self._run_flag:
-            ret, cv_img = cap.read()
-            if ret:
-                self.change_pixmap_signal.emit(cv_img)
-            time.sleep(0.033) # ~30 FPS
+        # Jetson optimized pipeline
+        gst = (f"nvarguscamerasrc sensor-id={self.src} ! "
+               "video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 ! "
+               "nvvidconv ! video/x-raw, format=BGRx ! videoconvert ! video/x-raw, format=BGR ! appsink drop=1")
+        cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
+        if not cap.isOpened(): cap = cv2.VideoCapture(self.src)
+        while self.running:
+            ret, frame = cap.read()
+            if ret: self.change_pixmap.emit(frame)
+            time.sleep(0.03)
         cap.release()
+    def stop(self): self.running = False; self.wait()
 
-    def stop(self):
-        self._run_flag = False
-        self.wait()
-
-class SystemMonitorThread(QThread):
-    update_signal = pyqtSignal(dict)
+class MonitorThread(QThread):
+    stats_updated = pyqtSignal(dict)
     def run(self):
         while True:
             mem = psutil.virtual_memory()
-            cpu = psutil.cpu_percent()
-            self.update_signal.emit({'ram': mem.percent, 'cpu': cpu})
+            disk = psutil.disk_usage('/')
+            self.stats_updated.emit({
+                'cpu': psutil.cpu_percent(),
+                'ram_p': mem.percent,
+                'ram_u': mem.used / (1024**3),
+                'ram_t': mem.total / (1024**3),
+                'disk': disk.percent
+            })
             time.sleep(2)
 
-class CommandRunnerThread(QThread):
-    output_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(int)
-    def __init__(self, cmd, cwd):
-        super().__init__()
-        self.cmd = cmd
-        self.cwd = cwd
-    def run(self):
-        p = subprocess.Popen(self.cmd, cwd=self.cwd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for line in p.stdout:
-            self.output_signal.emit(line.strip())
-        self.finished_signal.emit(p.wait())
-
 # =============================================================================
-# CUSTOM UI COMPONENTS (MODAL, RESIZABLE, FLOW)
+# UI COMPONENTS
 # =============================================================================
 
 class OverlayDialog(QWidget):
-    """
-    A full-screen overlay modal that dims the background and centers content.
-    """
-    def __init__(self, parent=None, title="Select Option"):
+    def __init__(self, parent, title):
         super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-        # Full coverage
         self.resize(parent.size())
+        self.setAttribute(Qt.WA_Dialog)
+        self.theme = parent.current_theme
         
-        # Dimmed Background
-        self.setStyleSheet("background-color: rgba(0, 0, 0, 200);")
+        # Dimmed BG
+        self.setStyleSheet("background-color: rgba(0, 0, 0, 180);")
         
-        # Main Layout
-        self.layout = QVBoxLayout(self)
-        self.layout.setAlignment(Qt.AlignCenter)
+        l = QVBoxLayout(self); l.setAlignment(Qt.AlignCenter)
         
-        # Content Box
-        self.content_frame = QFrame()
-        self.content_frame.setStyleSheet("""
-            QFrame {
-                background-color: #1e1e1e;
-                border: 1px solid #333;
-                border-radius: 16px;
-            }
-            QLabel { color: white; background: transparent; }
-            QPushButton { margin: 5px; }
+        self.box = QFrame()
+        self.box.setFixedWidth(500)
+        self.box.setStyleSheet(f"""
+            QFrame {{ background-color: {self.theme['card']}; border-radius: 16px; border: 1px solid {self.theme['border']}; }}
+            QLabel {{ color: {self.theme['text']}; }}
         """)
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20); shadow.setColor(QColor(0,0,0,150)); shadow.setOffset(0, 4)
-        self.content_frame.setGraphicsEffect(shadow)
-        self.content_frame.setFixedSize(500, 350)
         
-        # Inner Layout
-        self.inner_layout = QVBoxLayout(self.content_frame)
-        self.inner_layout.setSpacing(15)
-        self.inner_layout.setContentsMargins(30, 30, 30, 30)
+        self.inner = QVBoxLayout(self.box); self.inner.setContentsMargins(30,30,30,30); self.inner.setSpacing(15)
         
-        # Header
-        lbl_title = QLabel(title)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: bold; color: #76b900;")
-        lbl_title.setAlignment(Qt.AlignCenter)
-        self.inner_layout.addWidget(lbl_title)
+        t = QLabel(title); t.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {self.theme['accent']};")
+        t.setAlignment(Qt.AlignCenter)
+        self.inner.addWidget(t)
         
-        # Dynamic Content Area
-        self.dynamic_area = QVBoxLayout()
-        self.inner_layout.addLayout(self.dynamic_area)
-        self.inner_layout.addStretch()
-        
-        # Cancel Button logic handled by specific implementations or clicked outside (optional)
-        
-        self.layout.addWidget(self.content_frame)
-        self.hide() # Hidden by default
-
-    def close_modal(self):
+        l.addWidget(self.box)
         self.hide()
-        self.deleteLater()
+
+    def close_modal(self): self.hide(); self.deleteLater()
 
 class ResizableCard(QFrame):
-    """Base class for any card that needs to be resizable by the user."""
-    def __init__(self, parent=None, min_w=300, min_h=300):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("Card")
-        self.setMinimumSize(min_w, min_h)
+        self.setMinimumSize(320, 240)
+        QSizeGrip(self).setStyleSheet("background: transparent; width: 16px; height: 16px;")
         
-        # Add resize grip to bottom-right
-        self.grip = QSizeGrip(self)
-        self.grip.resize(16, 16)
-        # Position grip at bottom right
-        self.grip.setStyleSheet("background: transparent;")
-    
-    def resizeEvent(self, event):
-        rect = self.rect()
-        self.grip.move(rect.right() - 16, rect.bottom() - 16)
-        super().resizeEvent(event)
-
-class AddButtonWidget(QFrame):
-    clicked = pyqtSignal()
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("AddCard")
-        self.setFixedSize(300, 300)
-        self.setCursor(Qt.PointingHandCursor)
-        
-        layout = QVBoxLayout(self)
-        lbl = QLabel("+")
-        lbl.setAlignment(Qt.AlignCenter)
-        lbl.setStyleSheet("font-size: 80px; font-weight: 100; color: #555; background: transparent;")
-        layout.addWidget(lbl)
-    
-    def mousePressEvent(self, event):
-        self.clicked.emit()
-
-class FlowLayout(QLayout):
-    """Reflowing grid layout."""
-    def __init__(self, parent=None, margin=0, spacing=-1):
-        super().__init__(parent)
-        if parent: self.setContentsMargins(margin, margin, margin, margin)
-        self.setSpacing(spacing)
-        self.itemList = []
-    def __del__(self):
-        while self.itemList: self.takeAt(0)
-    def addItem(self, item): self.itemList.append(item)
-    def count(self): return len(self.itemList)
-    def itemAt(self, i): return self.itemList[i] if 0 <= i < len(self.itemList) else None
-    def takeAt(self, i): return self.itemList.pop(i) if 0 <= i < len(self.itemList) else None
-    def expandingDirections(self): return Qt.Orientations(Qt.Orientation(0))
-    def hasHeightForWidth(self): return True
-    def heightForWidth(self, width): return self.doLayout(QRect(0,0,width,0), True)
-    def setGeometry(self, rect): super().setGeometry(rect); self.doLayout(rect, False)
-    def sizeHint(self): return self.minimumSize()
-    def minimumSize(self):
-        s = QSize()
-        for i in self.itemList: s = s.expandedTo(i.minimumSize())
-        m = self.contentsMargins()
-        return s + QSize(2*m.top(), 2*m.top())
-    def doLayout(self, rect, test):
-        x, y, lh = rect.x(), rect.y(), 0
-        sp = self.spacing()
-        for item in self.itemList:
-            w = item.widget()
-            nextX = x + item.sizeHint().width() + sp
-            if nextX - sp > rect.right() and lh > 0:
-                x = rect.x()
-                y = y + lh + sp
-                nextX = x + item.sizeHint().width() + sp
-                lh = 0
-            if not test: item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
-            x = nextX
-            lh = max(lh, item.sizeHint().height())
-        return y + lh - rect.y()
+        # Shadow Effect
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(20); shadow.setColor(QColor(0,0,0,50)); shadow.setOffset(0, 4)
+        self.setGraphicsEffect(shadow)
 
 # =============================================================================
-# WIDGET IMPLS
+# PAGE WIDGETS
 # =============================================================================
 
 class CameraWidget(ResizableCard):
     removed = pyqtSignal(int)
-    def __init__(self, sensor_id, name):
-        super().__init__(min_w=320, min_h=240) # Aspect 4:3 default
-        self.sensor_id = sensor_id
+    def __init__(self, idx, theme):
+        super().__init__()
+        self.idx = idx
+        l = QVBoxLayout(self); l.setContentsMargins(0,0,0,0)
         
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0,0,0,0)
+        # Hover Control Bar
+        bar = QWidget(self); bar.setFixedHeight(40); bar.setStyleSheet("background: rgba(0,0,0,0.6); border-top-left-radius: 12px; border-top-right-radius: 12px;")
+        bl = QHBoxLayout(bar); bl.setContentsMargins(10,0,10,0)
+        lbl = QLabel(f"Camera {idx}"); lbl.setStyleSheet("color: white; font-weight: bold;")
+        btn = QPushButton("×"); btn.setFixedSize(24,24)
+        btn.setStyleSheet("background: transparent; color: #fff; font-size: 20px; border: none;")
+        btn.clicked.connect(self.close)
+        bl.addWidget(lbl); bl.addStretch(); bl.addWidget(btn)
         
-        # Absolute Pos Close Button
-        self.btn_close = QPushButton("×", self)
-        self.btn_close.clicked.connect(self.close)
-        self.btn_close.setFixedSize(30, 30)
-        self.btn_close.move(self.width()-35, 5)
-        self.btn_close.setStyleSheet("background: rgba(0,0,0,0.5); border-radius: 15px; color: white; font-size: 20px; padding:0;")
-        self.btn_close.setCursor(Qt.PointingHandCursor)
-        self.btn_close.raise_()
+        self.view = QLabel("Loading..."); self.view.setAlignment(Qt.AlignCenter)
+        self.view.setStyleSheet("background: #000; border-radius: 12px;")
+        l.addWidget(bar); l.addWidget(self.view)
         
-        # Video Label
-        self.video = QLabel("Loading...")
-        self.video.setAlignment(Qt.AlignCenter)
-        self.video.setStyleSheet("background: black; border-radius: 12px;")
-        layout.addWidget(self.video)
+        self.t = VideoThread(idx)
+        self.t.change_pixmap.connect(self.update_img)
+        self.t.start()
         
-        self.thread = VideoThread(sensor_id)
-        self.thread.change_pixmap_signal.connect(self.update_image)
-        self.thread.start()
-        
-    def update_image(self, img):
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    def update_img(self, cv_img):
+        rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        bytes_per_line = ch * w
-        q_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        pix = QPixmap.fromImage(q_img).scaled(self.video.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.video.setPixmap(pix)
-        
-    def close(self):
-        self.thread.stop()
-        self.removed.emit(self.sensor_id)
-        self.deleteLater()
-        
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.btn_close.move(self.width()-35, 5)
+        qimg = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
+        self.view.setPixmap(QPixmap.fromImage(qimg).scaled(self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def close(self): self.t.stop(); self.removed.emit(self.idx); self.deleteLater()
 
 class DockerWidget(ResizableCard):
     removed = pyqtSignal(str)
-    def __init__(self, env_name, config):
-        super().__init__(min_w=300, min_h=200)
-        self.env_name = env_name
+    def __init__(self, name, script_path, theme):
+        super().__init__()
+        self.name = name
+        self.script = script_path
         
-        layout = QVBoxLayout(self)
+        l = QVBoxLayout(self); l.setSpacing(10); l.setContentsMargins(20,20,20,20)
         
         # Header
-        h_layout = QHBoxLayout()
-        title = QLabel(env_name)
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #76b900; background: transparent;")
-        btn_close = QPushButton("×")
-        btn_close.setFixedSize(24, 24)
-        btn_close.clicked.connect(lambda: self.removed.emit(env_name))
-        btn_close.setStyleSheet("background: transparent; padding: 0;")
-        h_layout.addWidget(title)
-        h_layout.addStretch()
-        h_layout.addWidget(btn_close)
-        layout.addLayout(h_layout)
+        hl = QHBoxLayout()
+        t = QLabel(name); t.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {theme['accent']};")
+        x = QPushButton("×"); x.setFixedSize(24,24); x.clicked.connect(lambda: self.removed.emit(name))
+        x.setStyleSheet(f"color: {theme['text_sec']}; background: transparent; font-size: 20px;")
+        hl.addWidget(t); hl.addStretch(); hl.addWidget(x)
+        l.addLayout(hl)
         
-        # Details
-        details = QLabel(f"Base: {config['base']}\nPyTorch: {config['torch']}\nCUDA: {config['cuda']}")
-        details.setStyleSheet("color: #aaa; font-size: 13px; background: transparent;")
-        details.setAlignment(Qt.AlignTop)
-        layout.addWidget(details)
+        # Info
+        info = QLabel(f"Bind Mount: {os.path.basename(script_path)}\nStatus: Ready to Launch")
+        info.setObjectName("SecondaryText")
+        l.addWidget(info)
         
-        # Controls
-        ctrl = QHBoxLayout()
-        btn_start = QPushButton("Start"); btn_start.setObjectName("PrimaryButton")
-        btn_stop = QPushButton("Stop"); btn_stop.setObjectName("DangerButton")
-        ctrl.addWidget(btn_start)
-        ctrl.addWidget(btn_stop)
-        layout.addLayout(ctrl)
+        # Actions
+        btn = QPushButton("Run Container"); btn.setObjectName("PrimaryButton")
+        btn.clicked.connect(self.run_container)
+        l.addWidget(btn); l.addStretch()
+        
+    def run_container(self):
+        # VOLUME MOUNT LOGIC
+        # We mount the directory of the script to /app/ in the container
+        host_dir = os.path.dirname(self.script)
+        script_name = os.path.basename(self.script)
+        
+        cmd = f"gnome-terminal -- docker run -it --rm --runtime nvidia -v \"{host_dir}:/app\" -w /app l4t-pytorch python3 {script_name}"
+        subprocess.Popen(cmd, shell=True)
+        QMessageBox.information(self, "Launched", f"Running {script_name} in new terminal window.")
+
+class SettingsWidget(QWidget):
+    theme_toggled = pyqtSignal()
+    def __init__(self, theme):
+        super().__init__()
+        l = QVBoxLayout(self); l.setSpacing(20)
+        
+        # Header
+        l.addWidget(QLabel("Performance & Settings"))
+        
+        # Grid Stats
+        grid = QGridLayout()
+        self.cards = {}
+        for i, (k, title) in enumerate([('cpu', 'CPU Load'), ('ram', 'Memory Usage'), ('disk', 'Disk Space')]):
+            c = QFrame(); c.setObjectName("Card"); cl = QVBoxLayout(c)
+            cl.addWidget(QLabel(title))
+            val = QLabel("0%"); val.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {theme['text']};")
+            cl.addWidget(val)
+            bar = QProgressBar(); bar.setFixedHeight(6); bar.setTextVisible(False)
+            cl.addWidget(bar)
+            grid.addWidget(c, 0, i)
+            self.cards[k] = (val, bar)
+        l.addLayout(grid)
+        
+        # Device Info
+        dev = QFrame(); dev.setObjectName("Card"); dl = QHBoxLayout(dev)
+        inf = QLabel(f"Host: {platform.node()} | OS: {platform.system()} {platform.release()} | Python: {platform.python_version()}")
+        inf.setObjectName("SecondaryText")
+        dl.addWidget(inf)
+        l.addWidget(dev)
+        
+        # Appearance
+        app = QFrame(); app.setObjectName("Card"); al = QHBoxLayout(app)
+        al.addWidget(QLabel("Appearance Mode"))
+        al.addStretch()
+        btn_theme = QPushButton("Toggle Dark/Light Mode")
+        btn_theme.clicked.connect(self.theme_toggled.emit)
+        al.addWidget(btn_theme)
+        l.addWidget(app)
+        l.addStretch()
+        
+        self.mon = MonitorThread()
+        self.mon.stats_updated.connect(self.update_stats)
+        self.mon.start()
+
+    def update_stats(self, data):
+        self.cards['cpu'][0].setText(f"{data['cpu']}%"); self.cards['cpu'][1].setValue(int(data['cpu']))
+        self.cards['ram'][0].setText(f"{int(data['ram_p'])}%"); self.cards['ram'][1].setValue(int(data['ram_p']))
+        self.cards['disk'][0].setText(f"{data['disk']}%"); self.cards['disk'][1].setValue(int(data['disk']))
 
 # =============================================================================
 # MAIN APP
@@ -363,218 +291,178 @@ class DockerWidget(ResizableCard):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Jetson AI Studio")
         self.resize(1300, 850)
-        self.setStyleSheet(GLOBAL_STYLES)
+        self.is_dark = True
+        self.current_theme = Theme.DARK
+        self.apply_theme()
         
-        # Data
-        self.active_cams = set()
-        self.active_dockers = set()
+        # Layout
+        w = QWidget(); self.setCentralWidget(w); h = QHBoxLayout(w); h.setContentsMargins(0,0,0,0); h.setSpacing(0)
         
-        # Layouts
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
-        main_layout.setSpacing(0); main_layout.setContentsMargins(0,0,0,0)
+        # Sidebar
+        self.sidebar = QFrame(); self.sidebar.setObjectName("Sidebar"); self.sidebar.setFixedWidth(260)
+        sl = QVBoxLayout(self.sidebar); sl.setSpacing(10); sl.setContentsMargins(20,40,20,20)
+        sl.addWidget(QLabel("Jetson Studio")); sl.children()[0].setStyleSheet(f"font-size: 24px; font-weight: 800; color: {self.current_theme['accent']}; margin-bottom: 20px;")
         
-        self.setup_sidebar(main_layout)
+        self.navs = []
+        for n, i in [("Cameras", 0), ("Docker Environments", 1), ("Settings", 2)]:
+            b = QPushButton(n); b.setObjectName("NavButton"); b.setCheckable(True)
+            b.clicked.connect(lambda c, x=i: self.switch(x))
+            sl.addWidget(b); self.navs.append(b)
+        sl.addStretch()
+        h.addWidget(self.sidebar)
         
-        self.stack = QStackedWidget()
-        self.stack.setContentsMargins(20,20,20,20)
-        main_layout.addWidget(self.stack)
+        # Content
+        self.stack = QStackedWidget(); self.stack.setContentsMargins(30,30,30,30)
+        h.addWidget(self.stack)
         
         # Pages
-        self.page_cams = self.create_camera_page()
-        self.page_docker = self.create_docker_page()
+        self.create_pages()
+        self.switch(0)
+
+    def create_pages(self):
+        # 1. Cameras
+        p1 = QWidget(); l1 = QVBoxLayout(p1)
+        l1.addWidget(QLabel("Active Cameras", styleSheet="font-size: 28px; font-weight: bold;"))
+        self.flow_cam = self.create_flow(l1)
+        self.add_btn(self.flow_cam, self.show_cam_modal)
         
-        self.stack.addWidget(self.page_cams)
-        self.stack.addWidget(self.page_docker)
+        # 2. Docker
+        p2 = QWidget(); l2 = QVBoxLayout(p2)
+        l2.addWidget(QLabel("Docker Workspaces", styleSheet="font-size: 28px; font-weight: bold;"))
+        self.flow_docker = self.create_flow(l2)
+        self.add_btn(self.flow_docker, self.show_docker_modal)
         
-    def setup_sidebar(self, layout):
-        sidebar = QFrame()
-        sidebar.setStyleSheet("background: #181818; border-right: 1px solid #333;")
-        sidebar.setFixedWidth(240)
-        l = QVBoxLayout(sidebar)
-        l.setSpacing(10)
+        # 3. Settings
+        self.p3 = SettingsWidget(self.current_theme)
+        self.p3.theme_toggled.connect(self.toggle_theme)
         
-        lbl = QLabel("Jetson Studio")
-        lbl.setStyleSheet("font-size: 24px; font-weight: bold; color: white; padding: 20px 0;")
-        lbl.setAlignment(Qt.AlignCenter)
-        l.addWidget(lbl)
-        
-        btn_cam = QPushButton("Cameras"); btn_cam.setCheckable(True); btn_cam.setChecked(True)
-        btn_docker = QPushButton("Docker Environments"); btn_docker.setCheckable(True)
-        
-        btn_cam.clicked.connect(lambda: self.switch(0, [btn_cam, btn_docker]))
-        btn_docker.clicked.connect(lambda: self.switch(1, [btn_cam, btn_docker]))
-        
-        l.addWidget(btn_cam)
-        l.addWidget(btn_docker)
-        l.addStretch()
-        layout.addWidget(sidebar)
-        
-    def switch(self, idx, btns):
+        self.stack.addWidget(p1)
+        self.stack.addWidget(p2)
+        self.stack.addWidget(self.p3)
+
+    def create_flow(self, layout):
+        sa = QScrollArea(); sa.setWidgetResizable(True)
+        w = QWidget(); fl = FlowLayout(w)
+        sa.setWidget(w); layout.addWidget(sa)
+        return fl
+
+    def add_btn(self, flow, func):
+        b = QFrame(); b.setObjectName("AddCard"); b.setFixedSize(320, 240); b.setCursor(Qt.PointingHandCursor)
+        bl = QVBoxLayout(b); l = QLabel("+"); l.setAlignment(Qt.AlignCenter); l.setStyleSheet("font-size: 60px; font-weight: 100;")
+        bl.addWidget(l)
+        b.mousePressEvent = lambda e: func()
+        flow.Button = b # Keep ref
+        flow.addWidget(b)
+
+    def switch(self, idx):
         self.stack.setCurrentIndex(idx)
-        for i, b in enumerate(btns): b.setChecked(i == idx)
+        for i, b in enumerate(self.navs): b.setChecked(i == idx)
 
-    # -------------------------------------------------------------------------
-    # CAMERA PAGE
-    # -------------------------------------------------------------------------
-    def create_camera_page(self):
-        page = QWidget()
-        l = QVBoxLayout(page)
-        
-        header = QLabel("Active Cameras")
-        header.setStyleSheet("font-size: 28px; font-weight: bold; margin-bottom: 20px;")
-        l.addWidget(header)
-        
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("background: transparent; border: none;")
-        
-        self.cam_container = QWidget()
-        self.cam_flow = FlowLayout(self.cam_container, margin=0, spacing=20)
-        
-        # Add Button
-        self.btn_add_cam = AddButtonWidget()
-        self.btn_add_cam.clicked.connect(self.show_cam_modal)
-        self.cam_flow.addWidget(self.btn_add_cam)
-        
-        self.cam_container.setLayout(self.cam_flow)
-        scroll.setWidget(self.cam_container)
-        l.addWidget(scroll)
-        return page
+    def apply_theme(self):
+        self.current_theme = Theme.DARK if self.is_dark else Theme.LIGHT
+        self.setStyleSheet(get_stylesheet(self.current_theme))
 
+    def toggle_theme(self):
+        self.is_dark = not self.is_dark
+        self.apply_theme()
+        # Full reload might be needed for some sub-widgets, but stylesheet update handles most
+
+    # MODALS
     def show_cam_modal(self):
-        # Create Overlay Modal
-        self.modal = OverlayDialog(self, "Add New Camera")
-        
-        # Detect Cams
+        m = OverlayDialog(self, "Add New Camera")
+        cb = QComboBox()
         import glob
         cams = glob.glob('/dev/video*')
-        
-        combo = QComboBox()
-        combo.setStyleSheet("padding: 10px; background: #333; color: white; border-radius: 6px;")
-        if not cams: combo.addItem("No cameras detected")
+        if not cams: cb.addItem("No devices found")
         else:
-            for c in cams: 
-                idx = int(c.replace('/dev/video', ''))
-                if idx not in self.active_cams:
-                    combo.addItem(f"Camera {idx} ({c})", idx)
+            for c in cams: cb.addItem(c, int(c.replace('/dev/video','').strip()))
         
-        btn_add = QPushButton("Add to Grid")
-        btn_add.setObjectName("PrimaryButton")
-        btn_add.clicked.connect(lambda: self.add_cam(combo.currentData()))
+        btn = QPushButton("Add to Grid"); btn.setObjectName("PrimaryButton")
+        btn.clicked.connect(lambda: self.add_cam(m, cb.currentData()))
         
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(self.modal.close_modal)
-        
-        self.modal.dynamic_area.addWidget(QLabel("Select Device:"))
-        self.modal.dynamic_area.addWidget(combo)
-        self.modal.dynamic_area.addSpacing(20)
-        self.modal.dynamic_area.addWidget(btn_add)
-        self.modal.dynamic_area.addWidget(btn_cancel)
-        
-        self.modal.show()
+        m.inner.addWidget(QLabel("Select Device:"))
+        m.inner.addWidget(cb); m.inner.addWidget(btn); m.inner.addWidget(QPushButton("Cancel", clicked=m.close_modal))
+        m.show()
 
-    def add_cam(self, idx):
-        if idx is None: return
-        self.modal.close_modal()
-        
-        w = CameraWidget(idx, f"Cam {idx}")
-        w.removed.connect(self.remove_cam)
-        
-        self.cam_flow.removeWidget(self.btn_add_cam)
-        self.btn_add_cam.setParent(None)
-        self.cam_flow.addWidget(w)
-        self.cam_flow.addWidget(self.btn_add_cam)
-        self.active_cams.add(idx)
-
-    def remove_cam(self, idx):
-        self.active_cams.discard(idx)
-
-    # -------------------------------------------------------------------------
-    # DOCKER PAGE
-    # -------------------------------------------------------------------------
-    def create_docker_page(self):
-        page = QWidget()
-        l = QVBoxLayout(page)
-        
-        header = QLabel("Docker Workspaces")
-        header.setStyleSheet("font-size: 28px; font-weight: bold; margin-bottom: 20px;")
-        l.addWidget(header)
-        
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("background: transparent; border: none;")
-        
-        self.docker_container = QWidget()
-        self.docker_flow = FlowLayout(self.docker_container, margin=0, spacing=20)
-        
-        self.btn_add_docker = AddButtonWidget()
-        self.btn_add_docker.clicked.connect(self.show_docker_modal)
-        self.docker_flow.addWidget(self.btn_add_docker)
-        
-        self.docker_container.setLayout(self.docker_flow)
-        scroll.setWidget(self.docker_container)
-        l.addWidget(scroll)
-        return page
+    def add_cam(self, m, idx):
+        if idx is not None:
+            w = CameraWidget(idx, self.current_theme)
+            w.removed.connect(lambda i: w.deleteLater())
+            self.flow_cam.addWidget(w); # Ideally re-order before plus
+            # Simple re-add trick for order
+            self.flow_cam.removeWidget(self.flow_cam.Button)
+            self.flow_cam.addWidget(w)
+            self.flow_cam.addWidget(self.flow_cam.Button)
+        m.close_modal()
 
     def show_docker_modal(self):
-        self.dock_modal = OverlayDialog(self, "Create Environment")
+        m = OverlayDialog(self, "New Docker Workspace")
         
-        # Options
-        envs = {
-            "YOLOv8 Inference": {"base": "l4t-pytorch", "torch": "2.1", "cuda": "11.4"},
-            "Data Collection": {"base": "l4t-base", "torch": "N/A", "cuda": "11.4"},
-            "Training Suite": {"base": "l4t-ml", "torch": "1.13", "cuda": "11.4"}
-        }
+        # File Selection
+        self.sel_file = None
+        lbl_file = QLabel("No file selected")
+        btn_file = QPushButton("Select Python Script / File")
         
-        self.dock_combo = QComboBox()
-        self.dock_combo.setStyleSheet("padding: 10px; background: #333; color: white; border-radius: 6px;")
-        for k in envs.keys(): self.dock_combo.addItem(k, envs[k])
+        def pick_file():
+            f, _ = QFileDialog.getOpenFileName(self, "Select Script", os.path.expanduser("~"), "Python Files (*.py);;All Files (*)")
+            if f: 
+                self.sel_file = f
+                lbl_file.setText(os.path.basename(f))
         
-        btn_create = QPushButton("Create Workspace")
-        btn_create.setObjectName("PrimaryButton")
-        btn_create.clicked.connect(lambda: self.add_docker(self.dock_combo.currentText(), self.dock_combo.currentData()))
+        btn_file.clicked.connect(pick_file)
         
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.clicked.connect(self.dock_modal.close_modal)
+        btn_run = QPushButton("Create Workspace"); btn_run.setObjectName("PrimaryButton")
+        btn_run.clicked.connect(lambda: self.add_docker(m, self.sel_file))
         
-        self.dock_modal.dynamic_area.addWidget(QLabel("Environment Template:"))
-        self.dock_modal.dynamic_area.addWidget(self.dock_combo)
-        self.dock_modal.dynamic_area.addSpacing(20)
-        self.dock_modal.dynamic_area.addWidget(btn_create)
-        self.dock_modal.dynamic_area.addWidget(btn_cancel)
-        
-        self.dock_modal.show()
+        m.inner.addWidget(QLabel("Select Host File to Bind (Live Sync):"))
+        m.inner.addWidget(btn_file)
+        m.inner.addWidget(lbl_file)
+        m.inner.addSpacing(10)
+        m.inner.addWidget(btn_run)
+        m.inner.addWidget(QPushButton("Cancel", clicked=m.close_modal))
+        m.show()
 
-    def add_docker(self, name, config):
-        self.dock_modal.close_modal()
+    def add_docker(self, m, path):
+        if not path:
+            QMessageBox.warning(self, "Error", "Please select a file first."); return
         
-        w = DockerWidget(name, config)
-        w.removed.connect(self.remove_docker)
+        name = f"Workspace: {os.path.basename(path)}"
+        w = DockerWidget(name, path, self.current_theme)
+        w.removed.connect(lambda: w.deleteLater())
         
-        self.docker_flow.removeWidget(self.btn_add_docker)
-        self.btn_add_docker.setParent(None)
-        
-        self.docker_flow.addWidget(w)
-        self.docker_flow.addWidget(self.btn_add_docker)
-        self.active_dockers.add(name)
+        self.flow_docker.removeWidget(self.flow_docker.Button)
+        self.flow_docker.addWidget(w)
+        self.flow_docker.addWidget(self.flow_docker.Button)
+        m.close_modal()
 
-    def remove_docker(self, name): # Logic handled by deleteLater in signal
-        if name in self.active_dockers: self.active_dockers.discard(name)
-    
-    # Resize Overlay on Window Resize
-    def resizeEvent(self, event):
-        for child in self.children():
-            if isinstance(child, OverlayDialog) and child.isVisible():
-                child.resize(self.size())
-        super().resizeEvent(event)
+# Re-use FlowLayout from previous snippet (It was solid)
+class FlowLayout(QLayout):
+    def __init__(self, parent=None): super().__init__(parent); self.idx = []
+    def __del__(self): pass
+    def addItem(self, i): self.idx.append(i)
+    def count(self): return len(self.idx)
+    def itemAt(self, i): return self.idx[i] if 0<=i<len(self.idx) else None
+    def takeAt(self, i): return self.idx.pop(i) if 0<=i<len(self.idx) else None
+    def expandingDirections(self): return Qt.Orientations(Qt.Orientation(0))
+    def hasHeightForWidth(self): return True
+    def heightForWidth(self, w): return self.do(QRect(0,0,w,0), True)
+    def setGeometry(self, r): super().setGeometry(r); self.do(r, False)
+    def sizeHint(self): return QSize(500,500)
+    def do(self, rect, test):
+        x, y, lh, sp = rect.x(), rect.y(), 0, 20
+        for item in self.idx:
+            w = item.widget()
+            nextX = x + item.sizeHint().width() + sp
+            if nextX - sp > rect.right() and lh > 0:
+                x, y, lh = rect.x(), y + lh + sp, 0
+                nextX = x + item.sizeHint().width() + sp
+            if not test: item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+            x, lh = nextX, max(lh, item.sizeHint().height())
+        return y + lh - rect.y()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    from PyQt5.QtGui import QColor # Ensure availability
-    window = App()
-    window.show()
+    w = App()
+    w.show()
     sys.exit(app.exec_())
