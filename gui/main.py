@@ -302,7 +302,11 @@ class App(QMainWindow):
         # Sidebar
         self.sidebar = QFrame(); self.sidebar.setObjectName("Sidebar"); self.sidebar.setFixedWidth(260)
         sl = QVBoxLayout(self.sidebar); sl.setSpacing(10); sl.setContentsMargins(20,40,20,20)
-        sl.addWidget(QLabel("Jetson Studio")); sl.children()[0].setStyleSheet(f"font-size: 24px; font-weight: 800; color: {self.current_theme['accent']}; margin-bottom: 20px;")
+        
+        # Safe Label Creation
+        title_lbl = QLabel("Jetson Studio")
+        title_lbl.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {self.current_theme['accent']}; margin-bottom: 20px;")
+        sl.addWidget(title_lbl)
         
         self.navs = []
         for n, i in [("Cameras", 0), ("Docker Environments", 1), ("Settings", 2)]:
