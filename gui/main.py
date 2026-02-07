@@ -13,7 +13,7 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QProgressBar, QStackedWidget, QFrame,
-    QScrollArea, QGridLayout, QTextEdit, QMessageBox
+    QScrollArea, QGridLayout, QTextEdit, QMessageBox, QComboBox
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QFont, QIcon, QImage, QPixmap, QColor
@@ -314,12 +314,43 @@ class App(QMainWindow):
         title = QLabel("Live Camera Preview")
         title.setStyleSheet("color: white; font-size: 24px; font-weight: bold;")
         
+        # Camera Selection
+        self.camera_selector = QComboBox()
+        self.camera_selector.setMinimumWidth(250)
+        self.camera_selector.setStyleSheet("""
+            QComboBox {
+                background-color: #2d323b;
+                color: white;
+                border: 1px solid #3f3f46;
+                border-radius: 6px;
+                padding: 6px;
+                min-height: 20px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2d323b;
+                color: white;
+                selection-background-color: #76b900;
+            }
+        """)
+        
+        # Refresh Button
+        btn_refresh = QPushButton("⟳")
+        btn_refresh.setFixedSize(36, 36)
+        btn_refresh.setToolTip("Refresh Camera List")
+        btn_refresh.clicked.connect(self.refresh_cameras)
+        
         self.btn_start_cam = QPushButton("Start Stream")
         self.btn_start_cam.setObjectName("PrimaryButton")
         self.btn_start_cam.clicked.connect(self.toggle_video)
         
         header_layout.addWidget(title)
         header_layout.addStretch()
+        header_layout.addWidget(QLabel("Select Camera:"))
+        header_layout.addWidget(self.camera_selector)
+        header_layout.addWidget(btn_refresh)
         header_layout.addWidget(self.btn_start_cam)
         layout.addLayout(header_layout)
         
@@ -331,7 +362,42 @@ class App(QMainWindow):
         
         layout.addWidget(self.video_label)
         layout.addStretch()
+        
+        # Initial scan
+        QTimer.singleShot(500, self.refresh_cameras)
+        
         return page
+
+    def get_available_cameras(self):
+        """Scan for available /dev/video* devices."""
+        cameras = []
+        try:
+            import glob
+            devs = glob.glob('/dev/video*')
+            devs.sort()
+            
+            for dev in devs:
+                idx_str = dev.replace('/dev/video', '')
+                if idx_str.isdigit():
+                    idx = int(idx_str)
+                    cam_name = f"Camera {idx} ({dev})"
+                    cameras.append((cam_name, idx))
+        except Exception as e:
+            print(f"Error scanning cameras: {e}")
+        return cameras
+
+    def refresh_cameras(self):
+        """Update the combo box with available cameras."""
+        self.camera_selector.clear()
+        cameras = self.get_available_cameras()
+        
+        if not cameras:
+            self.camera_selector.addItem("No cameras found", -1)
+            self.btn_start_cam.setEnabled(False)
+        else:
+            for name, idx in cameras:
+                self.camera_selector.addItem(name, idx)
+            self.btn_start_cam.setEnabled(True)
 
     def toggle_video(self):
         if self.video_thread:
@@ -340,11 +406,20 @@ class App(QMainWindow):
             self.start_video()
 
     def start_video(self):
-        self.video_thread = VideoThread(sensor_id=0)
+        # Get selected camera index
+        sensor_id = self.camera_selector.currentData()
+        if sensor_id is None or sensor_id < 0:
+            QMessageBox.warning(self, "Camera Error", "No valid camera selected.")
+            return
+
+        self.video_thread = VideoThread(sensor_id=sensor_id)
         self.video_thread.change_pixmap_signal.connect(self.update_video_image)
         self.video_thread.start()
+        
         self.btn_start_cam.setText("Stop Stream")
         self.btn_start_cam.setObjectName("DangerButton")
+        self.camera_selector.setEnabled(False) # Lock selection while streaming
+        
         # Force styles update
         self.btn_start_cam.style().unpolish(self.btn_start_cam)
         self.btn_start_cam.style().polish(self.btn_start_cam)
@@ -353,10 +428,14 @@ class App(QMainWindow):
         if self.video_thread:
             self.video_thread.stop()
             self.video_thread = None
+            
         self.video_label.setText("Camera Offline")
         self.video_label.setPixmap(QPixmap()) # Clear
+        
         self.btn_start_cam.setText("Start Stream")
         self.btn_start_cam.setObjectName("PrimaryButton")
+        self.camera_selector.setEnabled(True) # Unlock selection
+        
         self.btn_start_cam.style().unpolish(self.btn_start_cam)
         self.btn_start_cam.style().polish(self.btn_start_cam)
 
