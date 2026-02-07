@@ -11,6 +11,106 @@ This guide covers common issues and their solutions when working with Arducam ca
 - [System Issues](#system-issues)
 - [Debugging Tools](#debugging-tools)
 
+---
+
+## L4T Version Mismatch (Most Common Issue)
+
+### Error: "Cannot find the corresponding deb package"
+
+**Script Output:**
+```
+Cannot find the corresponding deb package, please send the following information to support@arducam.com
+Kernel version: 5.10.216-tegra-35.6.4-...
+Jetson type: NVIDIA Orin Nano Developer Kit
+```
+
+**Why Does This Happen?**
+
+Arducam's `install_full.sh` script works by:
+1. Reading your exact L4T kernel version (e.g., `5.10.216-tegra-35.6.4-20241217114139`)
+2. Looking for this **exact string** in a pre-defined list (`imx519_links.txt`)
+3. If an exact match is NOT found → **Error occurs**
+
+The problem is that Arducam's list file may not include your specific L4T version. For example:
+- Listed: `35.5.0`, `35.6.0`, `35.6.2`
+- Your version: `35.6.4` → **Not found!**
+
+**Understanding L4T Versioning:**
+
+| L4T Version | JetPack Version | Ubuntu Version | GStreamer Version |
+|-------------|-----------------|----------------|-------------------|
+| 32.7.x      | 4.6.x           | 18.04          | 1.14              |
+| 35.3.1      | 5.1.1           | 20.04          | 1.16              |
+| 35.4.1      | 5.1.2           | 20.04          | 1.16              |
+| 35.5.0      | 5.1.3           | 20.04          | 1.16              |
+| 35.6.0      | 5.1.4           | 20.04          | 1.16              |
+| 35.6.2      | 5.1.5           | 20.04          | 1.16              |
+| 35.6.4      | 5.1.6           | 20.04          | 1.16              |
+| 36.2.0      | 6.0             | 22.04          | 1.20              |
+| 36.3.0      | 6.1             | 22.04          | 1.20              |
+| 36.4.x      | 6.2+            | 22.04          | 1.20              |
+
+### Solution 1: Use Our Smart Installer (Recommended)
+
+Our updated `setup_cameras.sh` script includes automatic fallback logic:
+
+```bash
+./scripts/setup_cameras.sh
+```
+
+**What it does:**
+1. Detects your exact L4T version
+2. If not found, searches for the **closest compatible version**
+3. Asks for your permission before installing the fallback driver
+4. Shows all available versions if automatic matching fails
+
+### Solution 2: Manual Fallback Installation
+
+If you prefer manual installation:
+
+```bash
+# 1. Check your L4T version
+dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel
+
+# 2. Download the links file for your camera model
+wget https://github.com/ArduCAM/MIPI_Camera/releases/download/v0.0.3/imx519_links.txt
+
+# 3. Open and find the closest version
+cat imx519_links.txt | grep "35.6"  # Find versions starting with 35.6.x
+
+# 4. Manually download and install the .deb
+# Example for Orin Nano with L4T 35.6.2:
+wget https://github.com/ArduCAM/MIPI_Camera/releases/download/v0.0.1-orin-nano/arducam-nvidia-l4t-kernel-t234-nano-5.10.216-tegra-35.6.2-..._arm64_imx519-low-speed.deb
+sudo dpkg -i *.deb
+sudo reboot
+```
+
+### Solution 3: Contact Arducam
+
+If no compatible version exists, you may need to request an update:
+
+1. **Email:** support@arducam.com
+2. **Include:**
+   - Your Jetson model: `cat /sys/firmware/devicetree/base/model`
+   - Your L4T version: `dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel`
+   - Camera model (e.g., IMX519)
+3. **GitHub Issue:** https://github.com/ArduCAM/MIPI_Camera/issues
+
+### Why Fallback Usually Works
+
+Drivers within the same **major.minor** version (e.g., 35.6.x) are typically compatible because:
+- Kernel ABI is stable within minor releases
+- Camera subsystem APIs don't change frequently
+- Only timestamp and patch numbers differ
+
+**Risk Level:**
+- `35.6.4` → `35.6.2` fallback: **Very Low Risk** ✅
+- `35.6.4` → `35.5.0` fallback: **Low Risk** ⚠️
+- `35.6.4` → `35.3.1` fallback: **Medium Risk** ⚠️ (may work, test thoroughly)
+- `35.x` → `36.x` fallback: **Will Not Work** ❌ (different kernel)
+
+---
+
 ## Camera Issues
 
 ### Camera Not Detected
