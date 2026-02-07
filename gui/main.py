@@ -16,15 +16,15 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QStackedWidget, QFrame,
     QScrollArea, QGridLayout, QComboBox, QFileDialog, 
     QGraphicsDropShadowEffect, QAbstractButton, QSizePolicy, QFormLayout, QLayout,
-    QGraphicsBlurEffect, QMenu, QAction, QListView, QCompleter, QTabWidget, QLineEdit
+    QGraphicsBlurEffect, QMenu, QAction, QLineWidth, QSizeGrip, QTabWidget, QLineEdit
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect, 
-    QPropertyAnimation, QEasingCurve, pyqtProperty
+    QPropertyAnimation, QEasingCurve, pyqtProperty, QEvent
 )
 from PyQt5.QtGui import (
-    QColor, QFont, QIcon, QImage, QPixmap, QPainter, QPen, QBrush, QStandardItemModel, QStandardItem,
-    QCursor
+    QColor, QFont, QIcon, QImage, QPixmap, QPainter, QPen, QBrush, 
+    QCursor, QShowEvent, QResizeEvent
 )
 
 # =============================================================================
@@ -52,6 +52,22 @@ def get_recommended_images():
     else:
         return NGC_CATALOG["desktop"], f"{system} ({arch})"
 
+def get_gpu_info():
+    """Try to get GPU Info string."""
+    try:
+        sys_plat = platform.system()
+        if sys_plat == "Darwin":
+            return "Apple Silicon GPU" # MacOS usually
+        elif sys_plat == "Linux":
+            # Simple check for NVIDIA
+            try:
+                out = subprocess.check_output("lspci | grep -i vga", shell=True).decode()
+                if "NVIDIA" in out: return "NVIDIA GPU"
+            except: pass
+            if os.path.exists("/usr/bin/tegrastats"): return "NVIDIA Tegra (Jetson)"
+    except: pass
+    return "Integrated / Unknown"
+
 # =============================================================================
 #  CUSTOM WIDGETS
 # =============================================================================
@@ -64,10 +80,8 @@ class ToggleSwitch(QAbstractButton):
         self.setFixedSize(60, 32)
         self.setCursor(Qt.PointingHandCursor)
         self._thumb_pos = 3.0
-        
         self.anim = QPropertyAnimation(self, b"thumbPos")
-        self.anim.setDuration(300)
-        self.anim.setEasingCurve(QEasingCurve.InOutBack)
+        self.anim.setDuration(300); self.anim.setEasingCurve(QEasingCurve.InOutBack)
 
     @pyqtProperty(float)
     def thumbPos(self): return self._thumb_pos
@@ -75,14 +89,13 @@ class ToggleSwitch(QAbstractButton):
     def thumbPos(self, pos): self._thumb_pos = pos; self.update()
 
     def checkStateSet(self):
-        start = self._thumb_pos
         end = 31.0 if self.isChecked() else 3.0 
-        self.anim.setStartValue(start); self.anim.setEndValue(end); self.anim.start()
+        self.anim.setStartValue(self._thumb_pos); self.anim.setEndValue(end); self.anim.start()
         self.toggled_state.emit(self.isChecked()); super().checkStateSet()
 
     def paintEvent(self, e):
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
-        track_col = QColor("#000000") if self.isChecked() else QColor("#4CA1AF") 
+        track_col = QColor("#000000") if self.isChecked() else QColor("#34C759") # Green/Blue for light mode
         p.setBrush(track_col); p.setPen(Qt.NoPen)
         p.drawRoundedRect(0, 0, self.width(), self.height(), 16, 16)
         
@@ -106,17 +119,18 @@ class DonutChart(QWidget):
         cx, cy = self.width() // 2, (self.height() - 20) // 2
         rect = QRect(cx - 50, cy - 50, 100, 100)
         
-        p.setPen(QPen(QColor(128, 128, 128, 40), 10, Qt.SolidLine, Qt.RoundCap))
+        # Transparent track
+        p.setPen(QPen(QColor(127, 127, 127, 50), 10, Qt.SolidLine, Qt.RoundCap))
         p.drawArc(rect, 0, 360 * 16)
         
         p.setPen(QPen(self.base_color, 10, Qt.SolidLine, Qt.RoundCap))
         p.drawArc(rect, 90 * 16, int(-self.percent * 3.6 * 16))
         
         p.setPen(self.parent().palette().text().color())
-        font = QFont(); font.setPixelSize(20); font.setBold(True); p.setFont(font)
+        font = QFont(); font.setPixelSize(22); font.setBold(True); p.setFont(font)
         p.drawText(rect, Qt.AlignCenter, f"{int(self.percent)}%")
         
-        font.setPixelSize(11); font.setBold(False); p.setPen(QColor(128,128,128)); p.setFont(font)
+        font.setPixelSize(12); font.setBold(False); p.setPen(QColor("gray")); p.setFont(font)
         p.drawText(0, self.height() - 30, self.width(), 30, Qt.AlignCenter, self.title)
 
 # =============================================================================
@@ -127,37 +141,71 @@ class ThemeOps:
     @staticmethod
     def get_style(is_dark):
         if is_dark:
+            # DARK
             bg = "#0f0f12"; sidebar = "#161618"; card = "#1c1c1e"; text = "#ffffff"
-            subtext = "#8e8e93"; border = "#2c2c2e"; input_bg = "#252528"; hover = "rgba(255,255,255,0.05)"
+            subtext = "#8e8e93"; border = "#2c2c2e"; input_bg = "#252528"; hover = "rgba(255,255,255,0.08)"
+            placeholder = "#636366"
         else:
-            bg = "#f5f5f7"; sidebar = "#ffffff"; card = "#ffffff"; text = "#000000"
-            subtext = "#6e6e73"; border = "#d1d1d6"; input_bg = "#e9e9eb"; hover = "rgba(0,0,0,0.05)"
+            # LIGHT
+            bg = "#F2F2F7"; sidebar = "#FFFFFF"; card = "#FFFFFF"; text = "#000000"
+            subtext = "#6e6e73"; border = "#D1D1D6"; input_bg = "#E9E9EB"; hover = "rgba(0,0,0,0.05)"
+            placeholder = "#aeaeb2"
         
         return f"""
         QMainWindow {{ background-color: {bg}; }}
         QWidget {{ font-family: '-apple-system', 'Segoe UI', 'Roboto', sans-serif; color: {text}; }}
+        
+        /* Sidebar */
         QFrame#Sidebar {{ background-color: {sidebar}; border-right: 1px solid {border}; }}
-        QPushButton#NavTab {{ border: none; border-radius: 12px; text-align: left; padding: 12px 20px; color: {subtext}; font-weight: 600; font-size: 14px; }}
+        
+        QPushButton#NavTab {{
+            border: none; border-radius: 12px; text-align: left; 
+            padding: 12px 20px; color: {subtext}; font-weight: 600; font-size: 14px;
+        }}
         QPushButton#NavTab:hover {{ background-color: {hover}; color: {text}; }}
         QPushButton#NavTab:checked {{ background-color: #0A84FF; color: white; }}
+        
+        /* Main Content */
+        QScrollArea {{ border: none; background-color: transparent; }}
+        QScrollArea > QWidget > QWidget {{ background-color: transparent; }}
+        
+        /* Cards */
         QFrame#Card {{ background-color: {card}; border: 1px solid {border}; border-radius: 18px; }}
-        QPushButton#AddBtn {{ border: 2px dashed {border}; border-radius: 18px; background-color: transparent; color: {subtext}; font-size: 40px; }}
-        QPushButton#AddBtn:hover {{ border-color: #0A84FF; color: #0A84FF; background-color: rgba(10,132,255, 0.05); }}
+        QFrame#InfoCard {{ background-color: {card}; border: 1px solid {border}; border-radius: 12px; }}
+        
+        /* Add Button (Greyish) */
+        QPushButton#AddBtn {{
+            border: 2px dashed {border}; border-radius: 18px; 
+            background-color: {hover}; color: {subtext}; font-size: 40px;
+        }}
+        QPushButton#AddBtn:hover {{ border-color: #0A84FF; color: #0A84FF; }}
+        
+        /* Modals */
         QFrame#ModalBox {{ background-color: {card}; border-radius: 20px; border: 1px solid {border}; }}
-        QLabel {{ color: {text}; }}
-        QLineEdit, QComboBox {{ background-color: {input_bg}; border: 1px solid {border}; border-radius: 10px; padding: 10px; color: {text}; selection-background-color: #0A84FF; }}
-        QComboBox QAbstractItemView {{ background-color: {card}; color: {text}; selection-background-color: #0A84FF; border: 1px solid {border}; }}
+        
+        /* Inputs */
+        QLineEdit, QComboBox {{ 
+            background-color: {input_bg}; border: 1px solid {border}; 
+            border-radius: 10px; padding: 10px; color: {text};
+        }}
+        
+        /* Tabs */
         QTabWidget::pane {{ border: none; }}
-        QTabWidget::tab-bar {{ left: 5px; }}
-        QTabBar::tab {{ background: {input_bg}; color: {subtext}; padding: 8px 16px; border-radius: 16px; margin-right: 8px; font-weight: 600; border: none; }}
+        QTabBar::tab {{
+            background: {input_bg}; color: {subtext}; padding: 8px 16px; 
+            border-radius: 16px; margin-right: 8px; font-weight: 600; border: none;
+        }}
         QTabBar::tab:selected {{ background: #0A84FF; color: white; }}
+        
+        /* Buttons */
         QPushButton#BtnPrimary {{ background-color: #0A84FF; color: white; border-radius: 10px; padding: 12px; font-weight: bold; border: none; }}
         QPushButton#BtnPrimary:hover {{ background-color: #0071e3; }}
+        
         QPushButton#BtnDanger {{ background-color: rgba(255,69,58,0.1); color: #FF453A; border-radius: 10px; padding: 12px; font-weight: bold; border: 1px solid rgba(255,69,58,0.3); }}
         QPushButton#BtnDanger:hover {{ background-color: #FF453A; color: white; }}
+        
         QPushButton#BtnSecondary {{ background-color: {input_bg}; color: {text}; border-radius: 10px; padding: 12px; border: 1px solid {border}; }}
-        QPushButton#BtnSecondary:hover {{ background-color: {border}; }}
-        QScrollArea {{ border: none; background: transparent; }}
+        QPushButton#BtnSecondary:hover {{ background: {border}; }}
         """
 
 # =============================================================================
@@ -218,7 +266,10 @@ class App(QMainWindow):
         self.blur_effect = QGraphicsBlurEffect(); self.blur_effect.setBlurRadius(0); self.stack.setGraphicsEffect(self.blur_effect)
         self.refresh_theme(); self.th_stats = StatsThread(); self.th_stats.updated.connect(self.update_stats); self.th_stats.start()
 
-    def refresh_theme(self): self.setStyleSheet(ThemeOps.get_style(self.is_dark))
+    def refresh_theme(self): 
+        # Force update palettes
+        style = ThemeOps.get_style(self.is_dark)
+        self.setStyleSheet(style)
 
     def setup_sidebar(self):
         self.sidebar = QFrame(); self.sidebar.setObjectName("Sidebar"); self.sidebar.setFixedWidth(260)
@@ -269,27 +320,40 @@ class App(QMainWindow):
         l.addLayout(h); l.addSpacing(40)
         
         # System Info Card
-        info_card = QFrame(); info_card.setObjectName("Card"); info_card.setFixedHeight(120)
-        il = QGridLayout(info_card); il.setContentsMargins(20,20,20,20)
+        l.addWidget(QLabel("Device Information", styleSheet="font-size: 18px; font-weight: bold; margin-bottom: 15px;"))
+        info_card = QFrame(); info_card.setObjectName("InfoCard") # Styled specifically
+        il = QGridLayout(info_card); il.setContentsMargins(25,25,25,25); il.setHorizontalSpacing(40); il.setVerticalSpacing(15)
         
-        infos = [
-            ("OS System", f"{platform.system()} {platform.release()}"),
-            ("Architecture", platform.machine()),
-            ("Processor", platform.processor() or "Unknown"),
-            ("Python Version", platform.python_version())
+        # Data
+        d_os = f"{platform.system()} {platform.release()}"
+        d_cpu = f"{platform.processor()} ({psutil.cpu_count(logical=False)} Cores)"
+        d_gpu = get_gpu_info()
+        d_py = platform.python_version()
+        d_arch = platform.machine()
+
+        items = [
+            ("Operating System", d_os),
+            ("Architecture", d_arch),
+            ("Processor", d_cpu),
+            ("Graphics (GPU)", d_gpu),
+            ("Python Runtime", d_py)
         ]
-        
-        for i, (k, v) in enumerate(infos):
-            il.addWidget(QLabel(k, styleSheet="color: #888; font-size: 12px;"), 0, i)
-            il.addWidget(QLabel(v, styleSheet="font-weight: bold; font-size: 14px;"), 1, i)
+
+        # 3 Columns grid
+        for idx, (k, v) in enumerate(items):
+            row = idx // 3
+            col = idx % 3
+            # Container for each item
+            c = QWidget(); vl = QVBoxLayout(c); vl.setContentsMargins(0,0,0,0); vl.setSpacing(5)
+            vl.addWidget(QLabel(k, styleSheet="color: #888; font-size: 12px; font-weight: 500;"))
+            vl.addWidget(QLabel(v, styleSheet="font-size: 14px; font-weight: 600;"))
+            il.addWidget(c, row, col)
             
-        l.addWidget(QLabel("Device Information", styleSheet="font-size: 18px; font-weight: bold; margin-bottom: 10px;"))
-        l.addWidget(info_card)
-        l.addSpacing(30)
+        l.addWidget(info_card); l.addSpacing(40)
 
         # Toggle
         row = QHBoxLayout(); row.setAlignment(Qt.AlignLeft)
-        l_mode = QLabel("Appearance Mode", styleSheet="font-size: 16px; font-weight: 600; margin-right: 15px;")
+        l_mode = QLabel("Appearance Mode", styleSheet="font-size: 16px; font-weight: 600; margin-right: 20px;")
         self.tog = ToggleSwitch(); self.tog.setChecked(True); self.tog.toggled_state.connect(self.toggle_mode)
         row.addWidget(l_mode); row.addWidget(self.tog)
         l.addLayout(row); l.addStretch()
@@ -308,7 +372,7 @@ class App(QMainWindow):
     def open_cam_modal(self):
         self.set_blur(True)
         o = Overlay(self, "Add Camera Source"); o.closed.connect(lambda: self.set_blur(False))
-        tabs = QTabWidget(); tabs.setMinimumHeight(150)
+        tabs = QTabWidget(); tabs.setMinimumHeight(120)
         
         t1 = QWidget(); f1 = QFormLayout(t1); f1.setContentsMargins(10,20,10,10)
         cb_loc = QComboBox()
@@ -342,7 +406,7 @@ class App(QMainWindow):
         elif idx == 1: src = le_url.text(); label = "Stream Source"
         elif idx == 2: src = le_stream.text(); label = f"AI Feed ({cb_img.currentText()})"
         if src is not None:
-            w = CardWidget(label, "Connecting..."); w.removed.connect(lambda: w.deleteLater())
+            w = ResizableCardWidget(label, "Connecting..."); w.removed.connect(lambda: w.deleteLater())
             self.l_cam.removeWidget(self.btn_add_cam); self.l_cam.addWidget(w); self.l_cam.addWidget(self.btn_add_cam)
             w.t = VideoThread(src); w.t.change_pixmap.connect(w.upd_img); w.t.start()
         o.close_me()
@@ -376,7 +440,7 @@ class App(QMainWindow):
         if path: self.sel_file = path; lbl.setText(os.path.basename(path)); lbl.setStyleSheet("color:#0A84FF; font-weight:bold;")
 
     def create_dock(self, o, img, path):
-        w = CardWidget(img.split(":")[0], f"Bind: {os.path.basename(path)}"); w.removed.connect(lambda: w.deleteLater())
+        w = ResizableCardWidget(img.split(":")[0], f"Bind: {os.path.basename(path)}"); w.removed.connect(lambda: w.deleteLater())
         self.l_doc.removeWidget(self.btn_doc_add); self.l_doc.addWidget(w); self.l_doc.addWidget(self.btn_doc_add)
         o.close_me()
 
@@ -399,19 +463,38 @@ class Overlay(QWidget):
         eff = QGraphicsDropShadowEffect(self.box); eff.setBlurRadius(50); eff.setColor(QColor(0,0,0,150)); self.box.setGraphicsEffect(eff)
     def close_me(self): self.closed.emit(); self.deleteLater()
 
-class CardWidget(QFrame):
+class ResizableCardWidget(QFrame):
     removed = pyqtSignal()
     def __init__(self, title, sub):
         super().__init__()
-        self.setFixedSize(300, 220); self.setObjectName("Card")
-        l = QVBoxLayout(self); l.setContentsMargins(0,0,0,0)
-        h = QFrame(); h.setFixedHeight(45); h.setStyleSheet("border-bottom: 1px solid #ddd; background: rgba(127,127,127,0.1);")
+        self.setObjectName("Card")
+        self.setMinimumSize(300, 220) # Min size
+        self.resize(320, 240) # Default size
+        
+        # Layout
+        l = QVBoxLayout(self); l.setContentsMargins(0,0,0,0); l.setSpacing(0)
+        
+        # Header
+        h = QFrame(); h.setFixedHeight(45); h.setStyleSheet("border-bottom: 1px solid #ddd; background: rgba(127,127,127,0.1); border-top-left-radius: 16px; border-top-right-radius: 16px;")
         hl = QHBoxLayout(h); hl.setContentsMargins(15,0,15,0)
-        hl.addWidget(QLabel(title, styleSheet="font-weight: bold;"))
-        x = QPushButton("×"); x.setFixedSize(24,24); x.clicked.connect(self.removed.emit); x.setStyleSheet("border:none; color:#888; font-size:20px;")
+        hl.addWidget(QLabel(title, styleSheet="font-weight: bold; background: transparent; border: none;"))
+        x = QPushButton("×"); x.setFixedSize(24,24); x.clicked.connect(self.removed.emit); x.setStyleSheet("border:none; color:#888; font-size:20px; background: transparent;")
         hl.addWidget(x); l.addWidget(h)
-        self.view = QLabel(sub); self.view.setAlignment(Qt.AlignCenter); self.view.setStyleSheet("background: black; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px; color: white;")
+        
+        # Content
+        self.view = QLabel(sub); self.view.setAlignment(Qt.AlignCenter); 
+        self.view.setStyleSheet("background: black; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px; color: white;")
         l.addWidget(self.view)
+        
+        # Size Grip (Overlay on bottom right)
+        self.grip = QSizeGrip(self)
+        self.grip.resize(20, 20) 
+
+    def resizeEvent(self, event):
+        rect = self.rect()
+        self.grip.move(rect.right() - 20, rect.bottom() - 20)
+        super().resizeEvent(event)
+
     def upd_img(self, img):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB); h,w,c = img.shape
         self.view.setPixmap(QPixmap.fromImage(QImage(img.data, w, h, c*w, QImage.Format_RGB888)).scaled(self.view.size(), Qt.KeepAspectRatio))
