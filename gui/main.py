@@ -61,11 +61,13 @@ class ToggleSwitch(QAbstractButton):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCheckable(True)
-        self.setFixedSize(50, 28)
+        self.setFixedSize(70, 36) # Wider for icons
         self.setCursor(Qt.PointingHandCursor)
-        self._thumb_pos = 3.0
+        self._thumb_pos = 4.0
+        
         self.anim = QPropertyAnimation(self, b"thumbPos")
-        self.anim.setDuration(200); self.anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self.anim.setDuration(250)
+        self.anim.setEasingCurve(QEasingCurve.InOutQuad)
 
     @pyqtProperty(float)
     def thumbPos(self): return self._thumb_pos
@@ -73,16 +75,44 @@ class ToggleSwitch(QAbstractButton):
     def thumbPos(self, pos): self._thumb_pos = pos; self.update()
 
     def checkStateSet(self):
-        start, end = (3.0, 23.0) if self.isChecked() else (23.0, 3.0)
-        self.anim.setStartValue(start); self.anim.setEndValue(end); self.anim.start()
-        self.toggled_state.emit(self.isChecked()); super().checkStateSet()
+        # Determine target position based on checked state
+        start = self._thumb_pos
+        end = 38.0 if self.isChecked() else 4.0
+        self.anim.setStartValue(start)
+        self.anim.setEndValue(end)
+        self.anim.start()
+        self.toggled_state.emit(self.isChecked())
+        super().checkStateSet()
 
     def paintEvent(self, e):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
-        col = QColor("#30D158") if self.isChecked() else QColor("#3a3a3c")
-        p.setBrush(col); p.setPen(Qt.NoPen)
-        p.drawRoundedRect(0, 0, self.width(), self.height(), 14, 14)
-        p.setBrush(QColor("#ffffff")); p.drawEllipse(int(self._thumb_pos), 3, 22, 22)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        
+        # Track Background
+        # Dark Mode (Checked) -> Dark Blue/Black, Light Mode (Unchecked) -> Sky Blue
+        track_col = QColor("#1c1c1e") if self.isChecked() else QColor("#81b0ff")
+        p.setBrush(track_col)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(0, 0, self.width(), self.height(), 18, 18)
+        
+        # Icons (Sun & Moon)
+        font = QFont("Segoe UI Emoji", 14)
+        p.setFont(font)
+        p.setPen(QColor("white"))
+        # Sun on the left (visible when unchecked/thumb is on right? No, thumb moves right when checked (Dark))
+        # Unchecked (Light Mode) -> Thumb Left. Icon Right (Sun?)
+        # Let's say: Unchecked = Light Mode. Checked = Dark Mode.
+        # Unchecked: Thumb at 4.0. Right side exposed -> Show Sun?
+        # Checked: Thumb at 38.0. Left side exposed -> Show Moon?
+        
+        if self.isChecked(): # Dark Mode
+            p.drawText(10, 24, "🌙") 
+        else: # Light Mode
+            p.drawText(40, 24, "☀️")
+
+        # Thumb
+        p.setBrush(QColor("#ffffff"))
+        p.drawEllipse(int(self._thumb_pos), 4, 28, 28)
 
 class DonutChart(QWidget):
     def __init__(self, title, color_hex, parent=None):
@@ -97,17 +127,19 @@ class DonutChart(QWidget):
         cx, cy = self.width() // 2, (self.height() - 20) // 2
         rect = QRect(cx - 50, cy - 50, 100, 100)
         
-        pen = QPen(QColor(255, 255, 255, 20), 10); pen.setCapStyle(Qt.RoundCap)
-        p.setPen(pen); p.drawArc(rect, 0, 360 * 16)
+        # Determine track color based on parent theme? 
+        # Simplified: Semi-transparent
+        p.setPen(QPen(QColor(128, 128, 128, 40), 10, Qt.SolidLine, Qt.RoundCap))
+        p.drawArc(rect, 0, 360 * 16)
         
-        pen.setColor(self.base_color)
-        p.setPen(pen); p.drawArc(rect, 90 * 16, int(-self.percent * 3.6 * 16))
+        p.setPen(QPen(self.base_color, 10, Qt.SolidLine, Qt.RoundCap))
+        p.drawArc(rect, 90 * 16, int(-self.percent * 3.6 * 16))
         
         p.setPen(self.parent().palette().text().color())
         font = QFont(); font.setPixelSize(20); font.setBold(True); p.setFont(font)
         p.drawText(rect, Qt.AlignCenter, f"{int(self.percent)}%")
         
-        font.setPixelSize(11); font.setBold(False); p.setPen(QColor("#888")); p.setFont(font)
+        font.setPixelSize(11); font.setBold(False); p.setPen(QColor(128,128,128)); p.setFont(font)
         p.drawText(0, self.height() - 30, self.width(), 30, Qt.AlignCenter, self.title)
 
 # =============================================================================
@@ -117,13 +149,26 @@ class DonutChart(QWidget):
 class ThemeOps:
     @staticmethod
     def get_style(is_dark):
-        bg = "#0f0f12" if is_dark else "#f2f2f7"
-        sidebar = "#161618" if is_dark else "#ffffff"
-        card = "#1c1c1e" if is_dark else "#ffffff"
-        text = "#ffffff" if is_dark else "#000000"
-        subtext = "#8e8e93"
-        border = "#2c2c2e" if is_dark else "#e5e5ea"
-        input_bg = "#252528" if is_dark else "#f0f0f6"
+        if is_dark:
+            # DARK THEME PALETTE
+            bg = "#0f0f12"
+            sidebar = "#161618"
+            card = "#1c1c1e"
+            text = "#ffffff"
+            subtext = "#8e8e93"
+            border = "#2c2c2e"
+            input_bg = "#252528"
+            hover = "rgba(255,255,255,0.05)"
+        else:
+            # LIGHT THEME PALETTE
+            bg = "#f5f5f7" 
+            sidebar = "#ffffff"
+            card = "#ffffff"
+            text = "#000000"
+            subtext = "#6e6e73"
+            border = "#d1d1d6"
+            input_bg = "#e9e9eb"
+            hover = "rgba(0,0,0,0.05)"
         
         return f"""
         QMainWindow {{ background-color: {bg}; }}
@@ -133,28 +178,36 @@ class ThemeOps:
         QFrame#Sidebar {{ background-color: {sidebar}; border-right: 1px solid {border}; }}
         
         QPushButton#NavTab {{
-            border: none; border-radius: 18px; text-align: left; 
-            padding: 10px 20px; color: {subtext}; font-weight: 500; font-size: 14px;
+            border: none; border-radius: 12px; text-align: left; 
+            padding: 12px 20px; color: {subtext}; font-weight: 600; font-size: 14px;
         }}
-        QPushButton#NavTab:hover {{ background-color: rgba(127,127,127, 0.1); color: {text}; }}
-        QPushButton#NavTab:checked {{ background-color: #0A84FF; color: white; font-weight: bold; }}
+        QPushButton#NavTab:hover {{ background-color: {hover}; color: {text}; }}
+        QPushButton#NavTab:checked {{ background-color: #0A84FF; color: white; }}
         
         /* Cards */
-        QFrame#Card {{ background-color: {card}; border: 1px solid {border}; border-radius: 16px; }}
+        QFrame#Card {{ background-color: {card}; border: 1px solid {border}; border-radius: 18px; }}
         
         QPushButton#AddBtn {{
-            border: 2px dashed {border}; border-radius: 16px; background-color: transparent; color: {subtext}; font-size: 40px;
+            border: 2px dashed {border}; border-radius: 18px; background-color: transparent; color: {subtext}; font-size: 40px;
         }}
         QPushButton#AddBtn:hover {{ border-color: #0A84FF; color: #0A84FF; background-color: rgba(10,132,255, 0.05); }}
         
         /* Modal & Inputs */
         QFrame#ModalBox {{ background-color: {card}; border-radius: 20px; border: 1px solid {border}; }}
+        QLabel {{ color: {text}; }}
+        
         QLineEdit, QComboBox {{
-            background-color: {input_bg}; border: 1px solid {border}; border-radius: 8px; padding: 10px; color: {text};
+            background-color: {input_bg}; border: 1px solid {border}; border-radius: 10px; padding: 10px; color: {text}; selection-background-color: #0A84FF;
         }}
+        QComboBox QAbstractItemView {{
+            background-color: {card}; color: {text}; selection-background-color: #0A84FF; border: 1px solid {border};
+        }}
+
+        /* Tabs */
         QTabWidget::pane {{ border: none; }}
+        QTabWidget::tab-bar {{ left: 5px; }}
         QTabBar::tab {{
-            background: {input_bg}; color: {subtext}; padding: 10px 15px; border-radius: 6px; margin-right: 5px;
+            background: {input_bg}; color: {subtext}; padding: 8px 16px; border-radius: 16px; margin-right: 8px; font-weight: 600; border: none;
         }}
         QTabBar::tab:selected {{ background: #0A84FF; color: white; }}
         
@@ -179,10 +232,7 @@ class VideoThread(QThread):
     change_pixmap = pyqtSignal(np.ndarray)
     def __init__(self, src): super().__init__(); self.src = src; self.running = True
     def run(self):
-        # Handle Integer (Local Device) vs String (URL/File)
         cap = cv2.VideoCapture(self.src)
-        
-        # If integer and failed, try GStreamer on Jetson
         if isinstance(self.src, int) and not cap.isOpened():
             gst = (f"nvarguscamerasrc sensor-id={self.src} ! video/x-raw(memory:NVMM), width=640, height=480, framerate=30/1 ! "
                    "nvvidconv ! video/x-raw, format=BGRx ! videoconvert ! video/x-raw, format=BGR ! appsink drop=1")
@@ -216,7 +266,9 @@ class App(QMainWindow):
         super().__init__()
         self.resize(1200, 800)
         self.setWindowTitle("Jetson Studio")
-        self.is_dark = True
+        
+        # State
+        self.is_dark = True 
         
         self.central = QWidget(); self.setCentralWidget(self.central)
         self.main_layout = QHBoxLayout(self.central); self.main_layout.setContentsMargins(0,0,0,0); self.main_layout.setSpacing(0)
@@ -232,10 +284,12 @@ class App(QMainWindow):
         
         self.blur_effect = QGraphicsBlurEffect(); self.blur_effect.setBlurRadius(0); self.stack.setGraphicsEffect(self.blur_effect)
         
-        self.refresh_theme()
+        self.refresh_theme() # Apply initial theme
         self.th_stats = StatsThread(); self.th_stats.updated.connect(self.update_stats); self.th_stats.start()
 
-    def refresh_theme(self): self.setStyleSheet(ThemeOps.get_style(self.is_dark))
+    def refresh_theme(self): 
+        self.setStyleSheet(ThemeOps.get_style(self.is_dark))
+        # Need to force update some custom widgets if necessary (charts repaint automatically)
 
     def setup_sidebar(self):
         self.sidebar = QFrame(); self.sidebar.setObjectName("Sidebar"); self.sidebar.setFixedWidth(260)
@@ -248,7 +302,7 @@ class App(QMainWindow):
             b.setCursor(Qt.PointingHandCursor); b.clicked.connect(lambda _, x=i: self.set_page(x))
             self.nav_btns.append(b); l.addWidget(b)
         l.addStretch()
-        l.addWidget(QLabel(f"Host: {platform.node()}", styleSheet="color: #666; font-size: 11px;"))
+        l.addWidget(QLabel(f"Host: {platform.node()}", styleSheet="color: #888; font-size: 11px;"))
         self.main_layout.addWidget(self.sidebar)
         self.nav_btns[0].setChecked(True)
 
@@ -295,15 +349,27 @@ class App(QMainWindow):
         l.addLayout(h); l.addSpacing(40)
         
         row = QHBoxLayout(); row.setAlignment(Qt.AlignLeft)
-        row.addWidget(QLabel("Light / Dark Mode", styleSheet="font-size: 16px; font-weight: 500; margin-right: 15px;"))
-        self.tog = ToggleSwitch(); self.tog.setChecked(True); self.tog.toggled_state.connect(lambda c: (setattr(self, 'is_dark', c), self.refresh_theme()))
+        
+        # Toggle Container
+        l_mode = QLabel("Appearance Mode", styleSheet="font-size: 16px; font-weight: 600; margin-right: 15px;")
+        
+        self.tog = ToggleSwitch()
+        self.tog.setChecked(True) # Start Dark
+        self.tog.toggled_state.connect(self.toggle_mode)
+        
+        row.addWidget(l_mode)
         row.addWidget(self.tog)
+        
         l.addLayout(row); l.addStretch()
         return p
 
     def update_stats(self, d):
         self.ch_cpu.set_value(d['cpu']); self.ch_ram.set_value(d['ram'])
         self.ch_dsk.set_value(d['disk']); self.ch_gpu.set_value(d['gpu'])
+    
+    def toggle_mode(self, checked):
+        self.is_dark = checked
+        self.refresh_theme()
 
     # --- MODALS ---
     def set_blur(self, active): self.blur_effect.setBlurRadius(15 if active else 0)
@@ -313,7 +379,7 @@ class App(QMainWindow):
         o = Overlay(self, "Add Camera Source"); o.closed.connect(lambda: self.set_blur(False))
         
         tabs = QTabWidget()
-        tabs.setFixedHeight(200) # Compact height
+        tabs.setFixedHeight(220)
         
         # Tab 1: Local
         t1 = QWidget(); f1 = QFormLayout(t1); f1.setVerticalSpacing(15); f1.setContentsMargins(10,20,10,10)
@@ -340,20 +406,14 @@ class App(QMainWindow):
         le_stream = QLineEdit("http://localhost:5000/video_feed"); f3.addRow("Exp. Stream:", le_stream)
         tabs.addTab(t3, "Docker AI Project")
         
-        # ADD TO CONTENT LAYOUT (Correction here)
         o.content_layout.addWidget(tabs)
         
-        # Actions
         h = QHBoxLayout()
-        b_c = QPushButton("Cancel"); b_c.setObjectName("BtnDanger"); b_c.setCursor(Qt.PointingHandCursor)
-        b_c.clicked.connect(o.close_me)
-        
+        b_c = QPushButton("Cancel"); b_c.setObjectName("BtnDanger"); b_c.setCursor(Qt.PointingHandCursor); b_c.clicked.connect(o.close_me)
         b_k = QPushButton("Connect"); b_k.setObjectName("BtnPrimary"); b_k.setCursor(Qt.PointingHandCursor)
         b_k.clicked.connect(lambda: self.connect_cam_logic(o, tabs, cb_loc, le_url, cb_img, le_stream))
         
         h.addWidget(b_c); h.addSpacing(10); h.addWidget(b_k)
-        
-        # Add buttons to content layout
         o.content_layout.addLayout(h)
         o.show()
 
@@ -362,24 +422,22 @@ class App(QMainWindow):
         src = None
         label = "Camera"
         
-        if idx == 0: # Local
+        if idx == 0: 
             src = cb_loc.currentData()
             label = cb_loc.currentText()
-        elif idx == 1: # Link
+        elif idx == 1: 
             src = le_url.text()
             label = "Stream Source"
-        elif idx == 2: # Docker
+        elif idx == 2:
             img = cb_img.currentData()
             src = le_stream.text()
             label = f"AI Feed ({cb_img.currentText()})"
-            # TODO: Docker launch logic
             
         if src is not None:
             w = CardWidget(label, "Connecting..."); w.removed.connect(lambda: w.deleteLater())
             self.l_cam.removeWidget(self.btn_add_cam)
             self.l_cam.addWidget(w); self.l_cam.addWidget(self.btn_add_cam)
             w.t = VideoThread(src); w.t.change_pixmap.connect(w.upd_img); w.t.start()
-            
         o.close_me()
 
     def open_doc_modal(self):
@@ -414,21 +472,16 @@ class App(QMainWindow):
         b_k.clicked.connect(lambda: self.create_dock(o, cb.currentData(), self.sel_file))
         
         h.addWidget(b_c); h.addSpacing(10); h.addWidget(b_k)
-        
-        # Add to content layout
         o.content_layout.addLayout(h)
         o.show()
 
     def set_f(self, path, lbl):
-        if path:
-            self.sel_file = path
-            lbl.setText(os.path.basename(path)); lbl.setStyleSheet("color:#0A84FF; font-weight:bold;")
+        if path: self.sel_file = path; lbl.setText(os.path.basename(path)); lbl.setStyleSheet("color:#0A84FF; font-weight:bold;")
 
     def create_dock(self, o, img, path):
         w = CardWidget(img.split(":")[0], f"Bind: {os.path.basename(path)}"); w.removed.connect(lambda: w.deleteLater())
         self.l_doc.removeWidget(self.btn_doc_add)
         self.l_doc.addWidget(w); self.l_doc.addWidget(self.btn_doc_add)
-        
         if path != "No selection":
             d = path if os.path.isdir(path) else os.path.dirname(path)
             cmd = f"gnome-terminal -- docker run -it --rm -v \"{d}:/app\" -w /app {img} /bin/bash"
@@ -445,20 +498,13 @@ class Overlay(QWidget):
         super().__init__(parent)
         self.resize(parent.size()); self.setStyleSheet("background-color: rgba(0,0,0,0.6);")
         self.layout = QVBoxLayout(self); self.layout.setAlignment(Qt.AlignCenter)
-        self.box = QFrame(); self.box.setObjectName("ModalBox"); self.box.setFixedWidth(450) # Smaller box
+        self.box = QFrame(); self.box.setObjectName("ModalBox"); self.box.setFixedWidth(450)
         self.layout.addWidget(self.box)
         
-        # EXPOSE CONTENT LAYOUT
-        self.content_layout = QVBoxLayout(self.box); 
-        self.content_layout.setContentsMargins(25,25,25,25); 
-        self.content_layout.setSpacing(15)
-        
+        self.content_layout = QVBoxLayout(self.box); self.content_layout.setContentsMargins(25,25,25,25); self.content_layout.setSpacing(15)
         t = QLabel(title); t.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 5px;"); t.setAlignment(Qt.AlignCenter)
         self.content_layout.addWidget(t)
-        
-        self.form = QFormLayout(); self.form.setVerticalSpacing(15)
-        self.content_layout.addLayout(self.form)
-        
+        self.form = QFormLayout(); self.form.setVerticalSpacing(15); self.content_layout.addLayout(self.form)
         eff = QGraphicsDropShadowEffect(self.box); eff.setBlurRadius(50); eff.setColor(QColor(0,0,0,150)); self.box.setGraphicsEffect(eff)
 
     def close_me(self): self.closed.emit(); self.deleteLater()
@@ -469,12 +515,12 @@ class CardWidget(QFrame):
         super().__init__()
         self.setFixedSize(300, 220); self.setObjectName("Card")
         l = QVBoxLayout(self); l.setContentsMargins(0,0,0,0)
-        h = QFrame(); h.setFixedHeight(45); h.setStyleSheet("border-bottom: 1px solid #333; background: rgba(255,255,255,0.02);")
+        h = QFrame(); h.setFixedHeight(45); h.setStyleSheet("border-bottom: 1px solid #ddd; background: rgba(127,127,127,0.1);")
         hl = QHBoxLayout(h); hl.setContentsMargins(15,0,15,0)
         hl.addWidget(QLabel(title, styleSheet="font-weight: bold;"))
         x = QPushButton("×"); x.setFixedSize(24,24); x.clicked.connect(self.removed.emit); x.setStyleSheet("border:none; color:#888; font-size:20px;")
         hl.addWidget(x); l.addWidget(h)
-        self.view = QLabel(sub); self.view.setAlignment(Qt.AlignCenter); self.view.setStyleSheet("background: black; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;")
+        self.view = QLabel(sub); self.view.setAlignment(Qt.AlignCenter); self.view.setStyleSheet("background: black; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px; color: white;")
         l.addWidget(self.view)
 
     def upd_img(self, img):
