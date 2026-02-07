@@ -16,15 +16,47 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QStackedWidget, QFrame,
     QScrollArea, QGridLayout, QComboBox, QFileDialog, 
     QGraphicsDropShadowEffect, QAbstractButton, QSizePolicy, QFormLayout, QLayout,
-    QGraphicsBlurEffect, QMenu, QAction, QListView
+    QGraphicsBlurEffect, QMenu, QAction, QListView, QCompleter
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect, 
     QPropertyAnimation, QEasingCurve, pyqtProperty
 )
 from PyQt5.QtGui import (
-    QColor, QFont, QIcon, QImage, QPixmap, QPainter, QPen, QBrush, QStandardItemModel, QStandardItem
+    QColor, QFont, QIcon, QImage, QPixmap, QPainter, QPen, QBrush, QStandardItemModel, QStandardItem,
+    QCursor
 )
+
+# =============================================================================
+#  NGC & DOCKER CATALOG
+# =============================================================================
+
+NGC_CATALOG = {
+    "jetson": [
+        {"name": "L4T PyTorch", "img": "nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3", "desc": "PyTorch 2.0, torchvision, torchaudio (JetPack 5.1)"},
+        {"name": "L4T ML", "img": "nvcr.io/nvidia/l4t-ml:r35.2.1-py3", "desc": "TensorFlow, PyTorch, JupyterLab, Scikit-Learn, Pandas"},
+        {"name": "DeepStream L4T", "img": "nvcr.io/nvidia/deepstream-l4t:6.2-base", "desc": "DeepStream 6.2 for Intelligent Video Analytics"},
+        {"name": "TensorRT L4T", "img": "nvcr.io/nvidia/l4t-tensorrt:r8.5.2.2-devel", "desc": "TensorRT 8.5 Development Environment"},
+        {"name": "L4T Base", "img": "nvcr.io/nvidia/l4t-base:r35.2.1", "desc": "Minimal Jetson Linux Base Image"}
+    ],
+    "desktop": [
+        {"name": "PyTorch (CPU/CUDA)", "img": "pytorch/pytorch:latest", "desc": "Standard PyTorch for x86_64/ARM64 (Mac/PC)"},
+        {"name": "TensorFlow", "img": "tensorflow/tensorflow:latest", "desc": "Standard TensorFlow Docker Image"},
+        {"name": "Python 3.8 Slim", "img": "python:3.8-slim", "desc": "Lightweight Python 3.8 Environment"},
+        {"name": "Ubuntu 22.04 Base", "img": "ubuntu:22.04", "desc": "Standard Ubuntu Base Image"}
+    ]
+}
+
+def get_recommended_images():
+    arch = platform.machine()
+    system = platform.system()
+    
+    # Check for Jetson (aarch64 + Linux usually implies Tegra if we want to be strict, but aarch64 is good enough proxy here)
+    if arch == "aarch64" and system == "Linux":
+        return NGC_CATALOG["jetson"], "Jetson (NVIDIA NGC)"
+    else:
+        # Mac (local), Windows, or x86 Linux
+        return NGC_CATALOG["desktop"], f"{system} ({arch})"
 
 # =============================================================================
 #  CUSTOM WIDGETS
@@ -103,19 +135,18 @@ class DonutChart(QWidget):
         
         # Value Arc
         pen.setColor(self.base_color)
-        # Check theme brightness for glow? Simplified: just solid clean color
         span = int(-self.percent * 3.6 * 16)
         p.setPen(pen)
         p.drawArc(rect, 90 * 16, span)
         
         # Text
-        p.setPen(self.parent().palette().text().color()) # Adapts to theme
-        font = QFont("Segoe UI", 20, QFont.Bold)
+        p.setPen(self.parent().palette().text().color())
+        font = QFont()
+        font.setPixelSize(20); font.setBold(True)
         p.setFont(font)
         p.drawText(rect, Qt.AlignCenter, f"{int(self.percent)}%")
         
-        font.setPointSize(11)
-        font.setBold(False)
+        font.setPixelSize(11); font.setBold(False)
         p.setPen(QColor("#888"))
         p.setFont(font)
         p.drawText(0, self.height() - 30, self.width(), 30, Qt.AlignCenter, self.title)
@@ -135,9 +166,12 @@ class ThemeOps:
         border = "#2c2c2e" if is_dark else "#e5e5ea"
         input_bg = "#252528" if is_dark else "#f0f0f6"
         
+        # Cross-platform safe font list
+        font_family = "'-apple-system', 'Segoe UI', 'Helvetica Neue', 'Roboto', sans-serif"
+        
         return f"""
         QMainWindow {{ background-color: {bg}; }}
-        QWidget {{ font-family: 'Segoe UI', sans-serif; color: {text}; }}
+        QWidget {{ font-family: {font_family}; color: {text}; }}
         
         /* Sidebar */
         QFrame#Sidebar {{ background-color: {sidebar}; border-right: 1px solid {border}; }}
@@ -169,6 +203,7 @@ class ThemeOps:
             background-color: {input_bg}; border: 1px solid {border}; 
             border-radius: 8px; padding: 10px; color: {text};
         }}
+        QComboBox::drop-down {{ border: none; }}
         
         /* Action Buttons */
         QPushButton#BtnPrimary {{
@@ -215,7 +250,7 @@ class StatsThread(QThread):
     updated = pyqtSignal(dict)
     def run(self):
         while True:
-            gpu = np.random.randint(0, 15) # Sim
+            gpu = np.random.randint(0, 15) 
             self.updated.emit({
                 'cpu': psutil.cpu_percent(),
                 'ram': psutil.virtual_memory().percent,
@@ -257,10 +292,10 @@ class App(QMainWindow):
         self.stack.addWidget(self.page_doc)
         self.stack.addWidget(self.page_set)
         
-        # Blur Effect Holder (hidden by default)
+        # Blur Effect
         self.blur_effect = QGraphicsBlurEffect()
         self.blur_effect.setBlurRadius(0)
-        self.stack.setGraphicsEffect(self.blur_effect) # Ready to use
+        self.stack.setGraphicsEffect(self.blur_effect)
         
         # Init Theme
         self.refresh_theme()
@@ -287,7 +322,7 @@ class App(QMainWindow):
             self.nav_btns.append(b); l.addWidget(b)
         
         l.addStretch()
-        l.addWidget(QLabel(f"Host: {platform.node()}", styleSheet="color: #666; font-size: 11px;"))
+        l.addWidget(QLabel(f"Host: {platform.node()}\nSystem: {platform.system()}", styleSheet="color: #666; font-size: 11px;"))
         self.main_layout.addWidget(self.sidebar)
         self.nav_btns[0].setChecked(True)
 
@@ -361,7 +396,6 @@ class App(QMainWindow):
 
     # --- MODALS ---
     def set_blur(self, active):
-        # Create subtle blur + dim
         r = 15 if active else 0
         self.blur_effect.setBlurRadius(r)
 
@@ -370,7 +404,6 @@ class App(QMainWindow):
         o = Overlay(self, "Connect Camera")
         o.closed.connect(lambda: self.set_blur(False))
         
-        # Content
         cb = QComboBox()
         import glob
         devs = glob.glob('/dev/video*')
@@ -380,11 +413,9 @@ class App(QMainWindow):
         
         o.form.addRow("Interface:", cb)
         
-        # Buttons
         h = QHBoxLayout()
         b_c = QPushButton("Cancel"); b_c.setObjectName("BtnDanger"); b_c.setCursor(Qt.PointingHandCursor)
         b_c.clicked.connect(o.close_me)
-        
         b_k = QPushButton("Connect"); b_k.setObjectName("BtnPrimary"); b_k.setCursor(Qt.PointingHandCursor)
         b_k.clicked.connect(lambda: self.add_cam(o, cb.currentData()))
         
@@ -398,12 +429,7 @@ class App(QMainWindow):
             self.l_cam.removeWidget(self.btn_add_cam)
             self.l_cam.addWidget(w)
             self.l_cam.addWidget(self.btn_add_cam)
-            
-            # Start Video
-            w.t = VideoThread(idx); w.t.change_pixmap.connect(w.upd_img)
-            w.t.start()
-            w.cleanup = w.t.stop
-            
+            w.t = VideoThread(idx); w.t.change_pixmap.connect(w.upd_img); w.t.start()
         o.close_me()
 
     def open_doc_modal(self):
@@ -411,50 +437,31 @@ class App(QMainWindow):
         o = Overlay(self, "New Workspace")
         o.closed.connect(lambda: self.set_blur(False))
         
-        # Env Selector Logic
-        is_jetson = platform.machine() == 'aarch64'
+        # 1. Environment from Catalog
+        images, arch_name = get_recommended_images()
+        o.form.addRow(QLabel(f"System: {arch_name}", styleSheet="color:#0A84FF; font-weight:bold;"))
         
         cb = QComboBox()
-        model = QStandardItemModel()
-        
-        opts = [
-            ("L4T PyTorch (Jetson)", is_jetson),
-            ("L4T ML (Jetson)", is_jetson),
-            ("Standard Python (CPU)", True)
-        ]
-        
-        for name, enabled in opts:
-            item = QStandardItem(name)
-            item.setEditable(False)
-            item.setEnabled(enabled)
-            if not enabled: 
-                item.setForeground(QBrush(QColor("#555")))
-                item.setText(name + " [N/A]")
-            model.appendRow(item)
-            
-        cb.setModel(model)
+        for img in images:
+            cb.addItem(f"{img['name']} - {img['desc']}", img['img'])
         o.form.addRow("Environment:", cb)
         
-        # File Picker
+        # 2. File Picker
         self.sel_files = "No selection"
         lbl_f = QLabel(self.sel_files); lbl_f.setStyleSheet("color: #888; font-style: italic;")
         
         def pick_f():
-            # Dialog that can allow picking file or folder isn't standard in one dialog
-            # We create a menu for choice
             m = QMenu(self)
-            
             def p_file():
                 f, _ = QFileDialog.getOpenFileName(self, "Select File")
                 if f: update_lbl(f)
-                    
             def p_dir():
                 d = QFileDialog.getExistingDirectory(self, "Select Folder")
                 if d: update_lbl(d)
             
             m.addAction("Select File...", p_file)
             m.addAction("Select Folder...", p_dir)
-            m.exec_(QCursor.pos())
+            m.exec_(QCursor.pos()) # QCursor is now imported
 
         def update_lbl(t):
             self.sel_files = t
@@ -473,24 +480,23 @@ class App(QMainWindow):
         b_c.clicked.connect(o.close_me)
         
         b_k = QPushButton("Create"); b_k.setObjectName("BtnPrimary"); b_k.setCursor(Qt.PointingHandCursor)
-        b_k.clicked.connect(lambda: self.add_doc(o, cb.currentText()))
+        b_k.clicked.connect(lambda: self.add_dock(o, cb.itemData(cb.currentIndex()), cb.currentText()))
         
         h.addWidget(b_c); h.addSpacing(10); h.addWidget(b_k)
         o.layout.addLayout(h)
         o.show()
 
-    def add_doc(self, o, env):
-        if "N/A" in env: return
-        w = CardWidget(env, f"Bind: {os.path.basename(self.sel_files)}"); w.removed.connect(lambda: w.deleteLater())
+    def add_dock(self, o, img_tag, desc):
+        w = CardWidget(img_tag.split(":")[0], f"Bind: {os.path.basename(self.sel_files)}"); w.removed.connect(lambda: w.deleteLater())
         self.l_doc.removeWidget(self.btn_add_doc)
         self.l_doc.addWidget(w)
         self.l_doc.addWidget(self.btn_add_doc)
         
-        # Run
         if self.sel_files != "No selection":
             path = self.sel_files
             d = path if os.path.isdir(path) else os.path.dirname(path)
-            cmd = f"gnome-terminal -- docker run -it --rm -v \"{d}:/app\" ubuntu echo 'Started {env}'"
+            # Use 'python3' for generic or default entrypoint
+            cmd = f"gnome-terminal -- docker run -it --rm -v \"{d}:/app\" -w /app {img_tag} /bin/bash"
             subprocess.Popen(cmd, shell=True)
             
         o.close_me()
@@ -504,10 +510,10 @@ class Overlay(QWidget):
     def __init__(self, parent, title):
         super().__init__(parent)
         self.resize(parent.size())
-        self.setStyleSheet("background-color: rgba(0,0,0,0.6);") # Semi-transparent dim
+        self.setStyleSheet("background-color: rgba(0,0,0,0.6);")
         
         self.layout = QVBoxLayout(self); self.layout.setAlignment(Qt.AlignCenter)
-        self.box = QFrame(); self.box.setObjectName("ModalBox"); self.box.setFixedWidth(500)
+        self.box = QFrame(); self.box.setObjectName("ModalBox"); self.box.setFixedWidth(600)
         
         inner = QVBoxLayout(self.box); inner.setContentsMargins(30,30,30,30); inner.setSpacing(20)
         
@@ -519,8 +525,6 @@ class Overlay(QWidget):
         inner.addLayout(self.form)
         
         self.layout.addWidget(self.box)
-        
-        # Shadow
         eff = QGraphicsDropShadowEffect(self.box); eff.setBlurRadius(50); eff.setColor(QColor(0,0,0,150))
         self.box.setGraphicsEffect(eff)
 
@@ -540,14 +544,13 @@ class CardWidget(QFrame):
         hl.addWidget(QLabel(title, styleSheet="font-weight: bold;"))
         x = QPushButton("×"); x.setFixedSize(24,24); x.clicked.connect(self.removed.emit)
         x.setCursor(Qt.PointingHandCursor)
-        x.setStyleSheet("border:none; color: #888; font-size: 20px; hover { color: red; }")
+        x.setStyleSheet("border:none; color: #888; font-size: 20px;")
         hl.addWidget(x)
         l.addWidget(h)
         
         self.view = QLabel(sub); self.view.setAlignment(Qt.AlignCenter)
         self.view.setStyleSheet("background: black; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;")
         l.addWidget(self.view)
-        self.cleanup = None
 
     def upd_img(self, img):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB); h,w,c = img.shape
