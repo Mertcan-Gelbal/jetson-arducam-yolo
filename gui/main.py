@@ -313,9 +313,10 @@ class App(QMainWindow):
         o = Overlay(self, "Add Camera Source"); o.closed.connect(lambda: self.set_blur(False))
         
         tabs = QTabWidget()
+        tabs.setFixedHeight(200) # Compact height
         
         # Tab 1: Local
-        t1 = QWidget(); f1 = QFormLayout(t1); f1.setVerticalSpacing(20)
+        t1 = QWidget(); f1 = QFormLayout(t1); f1.setVerticalSpacing(15); f1.setContentsMargins(10,20,10,10)
         cb_loc = QComboBox()
         import glob
         devs = glob.glob('/dev/video*')
@@ -326,20 +327,21 @@ class App(QMainWindow):
         tabs.addTab(t1, "Local Device")
         
         # Tab 2: Network / File
-        t2 = QWidget(); f2 = QFormLayout(t2); f2.setVerticalSpacing(20)
-        le_url = QLineEdit(); le_url.setPlaceholderText("rtsp://..., http://..., or /path/to/video.mp4")
+        t2 = QWidget(); f2 = QFormLayout(t2); f2.setVerticalSpacing(15); f2.setContentsMargins(10,20,10,10)
+        le_url = QLineEdit(); le_url.setPlaceholderText("rtsp://..., http://..., or /video.mp4")
         f2.addRow("Stream URL:", le_url)
         tabs.addTab(t2, "Stream / Link")
         
         # Tab 3: Docker AI Project
-        t3 = QWidget(); f3 = QFormLayout(t3); f3.setVerticalSpacing(20)
+        t3 = QWidget(); f3 = QFormLayout(t3); f3.setVerticalSpacing(15); f3.setContentsMargins(10,20,10,10)
         cb_img = QComboBox(); imgs, _ = get_recommended_images()
         for i in imgs: cb_img.addItem(i['name'], i['img'])
         f3.addRow("AI Image:", cb_img)
         le_stream = QLineEdit("http://localhost:5000/video_feed"); f3.addRow("Exp. Stream:", le_stream)
         tabs.addTab(t3, "Docker AI Project")
         
-        o.layout.addWidget(tabs)
+        # ADD TO CONTENT LAYOUT (Correction here)
+        o.content_layout.addWidget(tabs)
         
         # Actions
         h = QHBoxLayout()
@@ -349,7 +351,10 @@ class App(QMainWindow):
         b_k = QPushButton("Connect"); b_k.setObjectName("BtnPrimary"); b_k.setCursor(Qt.PointingHandCursor)
         b_k.clicked.connect(lambda: self.connect_cam_logic(o, tabs, cb_loc, le_url, cb_img, le_stream))
         
-        h.addWidget(b_c); h.addSpacing(10); h.addWidget(b_k); o.layout.addLayout(h)
+        h.addWidget(b_c); h.addSpacing(10); h.addWidget(b_k)
+        
+        # Add buttons to content layout
+        o.content_layout.addLayout(h)
         o.show()
 
     def connect_cam_logic(self, o, tabs, cb_loc, le_url, cb_img, le_stream):
@@ -364,12 +369,10 @@ class App(QMainWindow):
             src = le_url.text()
             label = "Stream Source"
         elif idx == 2: # Docker
-            # Here we would normally launch the docker container.
-            # For now, we connect to the stream URL it creates.
             img = cb_img.currentData()
             src = le_stream.text()
             label = f"AI Feed ({cb_img.currentText()})"
-            # TODO: Launch docker logic here
+            # TODO: Docker launch logic
             
         if src is not None:
             w = CardWidget(label, "Connecting..."); w.removed.connect(lambda: w.deleteLater())
@@ -409,7 +412,11 @@ class App(QMainWindow):
         b_c = QPushButton("Cancel"); b_c.setObjectName("BtnDanger"); b_c.setCursor(Qt.PointingHandCursor); b_c.clicked.connect(o.close_me)
         b_k = QPushButton("Create"); b_k.setObjectName("BtnPrimary"); b_k.setCursor(Qt.PointingHandCursor)
         b_k.clicked.connect(lambda: self.create_dock(o, cb.currentData(), self.sel_file))
-        h.addWidget(b_c); h.addSpacing(10); h.addWidget(b_k); o.layout.addLayout(h)
+        
+        h.addWidget(b_c); h.addSpacing(10); h.addWidget(b_k)
+        
+        # Add to content layout
+        o.content_layout.addLayout(h)
         o.show()
 
     def set_f(self, path, lbl):
@@ -438,12 +445,19 @@ class Overlay(QWidget):
         super().__init__(parent)
         self.resize(parent.size()); self.setStyleSheet("background-color: rgba(0,0,0,0.6);")
         self.layout = QVBoxLayout(self); self.layout.setAlignment(Qt.AlignCenter)
-        self.box = QFrame(); self.box.setObjectName("ModalBox"); self.box.setFixedWidth(500)
+        self.box = QFrame(); self.box.setObjectName("ModalBox"); self.box.setFixedWidth(450) # Smaller box
         self.layout.addWidget(self.box)
         
-        inner = QVBoxLayout(self.box); inner.setContentsMargins(30,30,30,30); inner.setSpacing(15)
-        t = QLabel(title); t.setStyleSheet("font-size: 20px; font-weight: bold; margin-bottom: 5px;"); t.setAlignment(Qt.AlignCenter); inner.addWidget(t)
-        self.form = QFormLayout(); self.form.setVerticalSpacing(15); inner.addLayout(self.form)
+        # EXPOSE CONTENT LAYOUT
+        self.content_layout = QVBoxLayout(self.box); 
+        self.content_layout.setContentsMargins(25,25,25,25); 
+        self.content_layout.setSpacing(15)
+        
+        t = QLabel(title); t.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 5px;"); t.setAlignment(Qt.AlignCenter)
+        self.content_layout.addWidget(t)
+        
+        self.form = QFormLayout(); self.form.setVerticalSpacing(15)
+        self.content_layout.addLayout(self.form)
         
         eff = QGraphicsDropShadowEffect(self.box); eff.setBlurRadius(50); eff.setColor(QColor(0,0,0,150)); self.box.setGraphicsEffect(eff)
 
