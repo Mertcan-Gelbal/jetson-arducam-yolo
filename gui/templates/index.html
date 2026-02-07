@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jetson Arducam AI Kit</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">🎯</div>
+                <span class="logo-text">Jetson AI Kit</span>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-section="dashboard">
+                    <span class="nav-icon">📊</span>
+                    <span>Dashboard</span>
+                </a>
+                <a href="#" class="nav-item" data-section="cameras">
+                    <span class="nav-icon">📷</span>
+                    <span>Cameras</span>
+                </a>
+                <a href="#" class="nav-item" data-section="install">
+                    <span class="nav-icon">⚙️</span>
+                    <span>Installation</span>
+                </a>
+                <a href="#" class="nav-item" data-section="docker">
+                    <span class="nav-icon">🐳</span>
+                    <span>Docker</span>
+                </a>
+                <a href="#" class="nav-item" data-section="logs">
+                    <span class="nav-icon">📜</span>
+                    <span>Logs</span>
+                </a>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="connection-status">
+                    <span class="status-dot" id="connectionDot"></span>
+                    <span id="connectionText">Connecting...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard Section -->
+            <section id="dashboard" class="section active">
+                <div class="section-header">
+                    <h1>System Dashboard</h1>
+                    <button class="btn btn-primary" onclick="refreshSystemInfo()">
+                        <span>🔄</span> Refresh
+                    </button>
+                </div>
+
+                <!-- System Info Cards -->
+                <div class="cards-grid">
+                    <div class="card card-jetson">
+                        <div class="card-header">
+                            <span class="card-icon">🖥️</span>
+                            <h3>Jetson Device</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="info-row">
+                                <span class="label">Model</span>
+                                <span class="value" id="jetsonModel">Loading...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="label">JetPack</span>
+                                <span class="value" id="jetpackVersion">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="label">L4T Version</span>
+                                <span class="value" id="l4tVersion">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="label">Ubuntu</span>
+                                <span class="value" id="ubuntuVersion">--</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card card-memory">
+                        <div class="card-header">
+                            <span class="card-icon">💾</span>
+                            <h3>Memory</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="progress-container">
+                                <div class="progress-label">
+                                    <span>RAM</span>
+                                    <span id="ramUsage">-- / -- MB</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="ramProgress" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="progress-container">
+                                <div class="progress-label">
+                                    <span>Swap</span>
+                                    <span id="swapUsage">-- MB</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill swap" id="swapProgress" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="progress-container">
+                                <div class="progress-label">
+                                    <span>Disk</span>
+                                    <span id="diskUsage">-- / -- GB</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-fill disk" id="diskProgress" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card card-cameras">
+                        <div class="card-header">
+                            <span class="card-icon">📷</span>
+                            <h3>Cameras</h3>
+                        </div>
+                        <div class="card-body">
+                            <div id="cameraList" class="camera-list">
+                                <div class="loading-spinner">Scanning...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card card-docker">
+                        <div class="card-header">
+                            <span class="card-icon">🐳</span>
+                            <h3>Docker Status</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="status-badges">
+                                <span class="badge" id="dockerInstalled">Docker: --</span>
+                                <span class="badge" id="dockerRunning">Service: --</span>
+                                <span class="badge" id="nvidiaRuntime">NVIDIA: --</span>
+                            </div>
+                            <div class="docker-images" id="dockerImages">
+                                <p class="muted">No images found</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Cameras Section -->
+            <section id="cameras" class="section">
+                <div class="section-header">
+                    <h1>Camera Detection</h1>
+                    <button class="btn btn-primary" onclick="refreshCameras()">
+                        <span>🔄</span> Refresh
+                    </button>
+                </div>
+
+                <div class="camera-detection-panel">
+                    <div class="detection-grid" id="detectedCameras">
+                        <!-- Camera cards will be inserted here -->
+                    </div>
+                </div>
+
+                <div class="gstreamer-panel">
+                    <h2>GStreamer Status</h2>
+                    <div class="gst-info">
+                        <div class="gst-version">
+                            <span class="label">Version:</span>
+                            <span class="value" id="gstVersion">--</span>
+                        </div>
+                        <div class="gst-plugins">
+                            <span class="plugin-badge" id="pluginNvargus">nvarguscamerasrc</span>
+                            <span class="plugin-badge" id="pluginNvvidconv">nvvidconv</span>
+                            <span class="plugin-badge" id="pluginOpenCV">OpenCV+GStreamer</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Installation Section -->
+            <section id="install" class="section">
+                <div class="section-header">
+                    <h1>Installation Wizard</h1>
+                </div>
+
+                <div class="installation-wizard">
+                    <div class="wizard-steps">
+                        <div class="wizard-step" id="step-drivers">
+                            <div class="step-number">1</div>
+                            <div class="step-content">
+                                <h4>Camera Drivers</h4>
+                                <p>Install Arducam camera drivers</p>
+                            </div>
+                            <div class="step-status">
+                                <span class="status-icon">⏳</span>
+                            </div>
+                        </div>
+
+                        <div class="wizard-step" id="step-verify">
+                            <div class="step-number">2</div>
+                            <div class="step-content">
+                                <h4>System Verification</h4>
+                                <p>Check system compatibility</p>
+                            </div>
+                            <div class="step-status">
+                                <span class="status-icon">⏳</span>
+                            </div>
+                        </div>
+
+                        <div class="wizard-step" id="step-build">
+                            <div class="step-number">3</div>
+                            <div class="step-content">
+                                <h4>Docker Build</h4>
+                                <p>Build AI inference environment</p>
+                            </div>
+                            <div class="step-status">
+                                <span class="status-icon">⏳</span>
+                            </div>
+                        </div>
+
+                        <div class="wizard-step" id="step-run">
+                            <div class="step-number">4</div>
+                            <div class="step-content">
+                                <h4>Launch Container</h4>
+                                <p>Start the AI environment</p>
+                            </div>
+                            <div class="step-status">
+                                <span class="status-icon">⏳</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="wizard-actions">
+                        <div class="step-selection">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="checkDrivers" checked>
+                                <span>Install Drivers</span>
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="checkVerify" checked>
+                                <span>Verify System</span>
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="checkBuild" checked>
+                                <span>Build Docker</span>
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="checkRun">
+                                <span>Launch Container</span>
+                            </label>
+                        </div>
+
+                        <button class="btn btn-large btn-success" id="startInstallBtn" onclick="startInstallation()">
+                            <span>🚀</span> Start Installation
+                        </button>
+                    </div>
+
+                    <div class="installation-progress" id="installProgress" style="display: none;">
+                        <div class="progress-header">
+                            <span>Installation in progress...</span>
+                            <span id="progressPercent">0%</span>
+                        </div>
+                        <div class="progress-bar large">
+                            <div class="progress-fill" id="installProgressBar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Docker Section -->
+            <section id="docker" class="section">
+                <div class="section-header">
+                    <h1>Docker Management</h1>
+                </div>
+
+                <div class="docker-panel">
+                    <div class="docker-actions">
+                        <button class="btn btn-primary" onclick="runScript('build')">
+                            <span>🔨</span> Build Image
+                        </button>
+                        <button class="btn btn-success" onclick="runScript('run')">
+                            <span>▶️</span> Start Container
+                        </button>
+                        <button class="btn btn-warning" onclick="stopContainer()">
+                            <span>⏹️</span> Stop Container
+                        </button>
+                    </div>
+
+                    <div class="docker-status-panel">
+                        <h3>Containers</h3>
+                        <div id="containerList" class="container-list">
+                            <p class="muted">No containers found</p>
+                        </div>
+                    </div>
+
+                    <div class="docker-status-panel">
+                        <h3>Images</h3>
+                        <div id="imageList" class="image-list">
+                            <p class="muted">No images found</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Logs Section -->
+            <section id="logs" class="section">
+                <div class="section-header">
+                    <h1>Installation Logs</h1>
+                    <button class="btn btn-secondary" onclick="clearLogs()">
+                        <span>🗑️</span> Clear
+                    </button>
+                </div>
+
+                <div class="log-panel">
+                    <pre id="logOutput" class="log-output">Waiting for installation to start...</pre>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
