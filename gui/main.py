@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QFrame,
     QScrollArea, QGridLayout, QComboBox, QFileDialog, 
-    QGraphicsDropShadowEffect, QAbstractButton, QSizePolicy, QFormLayout
+    QGraphicsDropShadowEffect, QAbstractButton, QSizePolicy, QFormLayout, QLayout
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect, 
