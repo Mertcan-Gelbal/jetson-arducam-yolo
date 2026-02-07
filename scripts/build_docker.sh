@@ -32,12 +32,17 @@ fi
 # 1.5 Quick GStreamer & Camera Health Check
 echo ""
 echo "Running Hardware Diagnostics..."
-if ! ./scripts/check_gstreamer.sh; then
-    echo -e "${YELLOW}Warning: Hardware diagnostics found issues.${NC}"
-    read -p "Your camera might not work inside Docker. Continue with build? (y/N): " HW_CONT
-    if [[ ! $HW_CONT =~ ^[Yy]$ ]]; then
-        exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/check_gstreamer.sh" ]; then
+    if ! "$SCRIPT_DIR/check_gstreamer.sh"; then
+        echo -e "${YELLOW}Warning: Hardware diagnostics found issues.${NC}"
+        read -p "Your camera might not work inside Docker. Continue with build? (y/N): " HW_CONT
+        if [[ ! $HW_CONT =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
     fi
+else
+    echo -e "${YELLOW}Note: GStreamer check script not found. Skipping hardware diagnostics.${NC}"
 fi
 
 # 2. Check Memory Resources (Prevent OOM)

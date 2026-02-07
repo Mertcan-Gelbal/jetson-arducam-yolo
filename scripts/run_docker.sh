@@ -36,8 +36,12 @@ sudo docker run -d \
     --name $CONTAINER_NAME \
     --runtime nvidia \
     --net=host \
+    --ipc=host \
+    --shm-size=2g \
     --restart unless-stopped \
     --privileged \
+    -e DISPLAY=$DISPLAY \
+    -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
     $VIDEO_DEVICES \
     -v $(pwd):/workspace \
     -w /workspace \
