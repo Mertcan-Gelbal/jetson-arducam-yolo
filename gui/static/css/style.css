@@ -1,119 +1,114 @@
 /* =============================================================================
-   Jetson Arducam AI Kit - Modern Dashboard CSS
+   Jetson Arducam AI Kit - Clean Minimal Theme
+   Optimized for Ubuntu/Jetson displays
    ============================================================================= */
 
 :root {
-    /* Color Palette - Dark Theme */
-    --bg-primary: #0f0f1a;
-    --bg-secondary: #1a1a2e;
-    --bg-card: #16213e;
-    --bg-hover: #1f2847;
-    
-    /* Accent Colors */
-    --accent-primary: #00d4ff;
-    --accent-secondary: #7c3aed;
-    --accent-success: #10b981;
-    --accent-warning: #f59e0b;
-    --accent-error: #ef4444;
-    
-    /* Text Colors */
-    --text-primary: #ffffff;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
-    
-    /* Gradients */
-    --gradient-primary: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
-    --gradient-success: linear-gradient(135deg, #10b981 0%, #059669 100%);
-    --gradient-nvidia: linear-gradient(135deg, #76b900 0%, #8dc500 100%);
-    
-    /* Shadows */
-    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-    --shadow-glow: 0 0 20px rgba(0, 212, 255, 0.3);
-    
-    /* Spacing */
-    --sidebar-width: 260px;
-    --border-radius: 12px;
-    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    /* Colors - Subtle and Professional */
+    --bg-primary: #1a1d21;
+    --bg-secondary: #22262b;
+    --bg-card: #282c34;
+    --bg-hover: #2d323b;
+
+    /* Accent - NVIDIA Green inspired */
+    --accent-primary: #76b900;
+    --accent-secondary: #5a9000;
+    --accent-info: #3b82f6;
+    --accent-success: #22c55e;
+    --accent-warning: #eab308;
+    --accent-danger: #ef4444;
+
+    /* Text */
+    --text-primary: #e4e4e7;
+    --text-secondary: #a1a1aa;
+    --text-muted: #71717a;
+
+    /* Borders */
+    --border-color: #3f3f46;
+    --border-light: #52525b;
+
+    /* Sizing */
+    --sidebar-width: 220px;
+    --radius: 6px;
+    --radius-lg: 8px;
+
+    /* Transitions */
+    --transition: 0.2s ease;
 }
 
-/* Reset & Base */
-* {
+/* Reset */
+*,
+*::before,
+*::after {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
 }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Ubuntu', 'Segoe UI', sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
     background: var(--bg-primary);
     color: var(--text-primary);
     min-height: 100vh;
-    overflow-x: hidden;
 }
 
-/* App Container */
+/* =============================================================================
+   Layout
+   ============================================================================= */
+
 .app-container {
     display: flex;
     min-height: 100vh;
 }
 
-/* =============================================================================
-   Sidebar
-   ============================================================================= */
-
+/* Sidebar */
 .sidebar {
     width: var(--sidebar-width);
     background: var(--bg-secondary);
-    border-right: 1px solid rgba(255, 255, 255, 0.05);
-    display: flex;
-    flex-direction: column;
+    border-right: 1px solid var(--border-color);
     position: fixed;
     height: 100vh;
-    z-index: 100;
+    display: flex;
+    flex-direction: column;
 }
 
 .logo {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 24px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    gap: 10px;
+    padding: 20px 16px;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .logo-icon {
-    font-size: 32px;
-    filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.5));
+    width: 24px;
+    height: 24px;
+    color: var(--accent-primary);
 }
 
 .logo-text {
-    font-size: 18px;
-    font-weight: 700;
-    background: var(--gradient-primary);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
 .nav-menu {
     flex: 1;
-    padding: 16px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    padding: 12px 8px;
 }
 
 .nav-item {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 14px 16px;
-    border-radius: 10px;
+    gap: 10px;
+    padding: 10px 12px;
     color: var(--text-secondary);
     text-decoration: none;
+    border-radius: var(--radius);
+    margin-bottom: 2px;
     transition: var(--transition);
-    font-weight: 500;
 }
 
 .nav-item:hover {
@@ -122,140 +117,133 @@ body {
 }
 
 .nav-item.active {
-    background: linear-gradient(135deg, rgba(0, 212, 255, 0.15) 0%, rgba(124, 58, 237, 0.15) 100%);
+    background: var(--bg-card);
     color: var(--accent-primary);
-    border: 1px solid rgba(0, 212, 255, 0.2);
 }
 
 .nav-icon {
-    font-size: 20px;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
 }
 
 .sidebar-footer {
-    padding: 16px 24px;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-color);
 }
 
 .connection-status {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text-muted);
 }
 
 .status-dot {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: var(--accent-warning);
-    animation: pulse 2s infinite;
 }
 
 .status-dot.connected {
     background: var(--accent-success);
 }
 
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-
-/* =============================================================================
-   Main Content
-   ============================================================================= */
-
+/* Main Content */
 .main-content {
     flex: 1;
     margin-left: var(--sidebar-width);
-    padding: 32px;
-    background: var(--bg-primary);
+    padding: 24px;
     min-height: 100vh;
 }
 
 .section {
     display: none;
-    animation: fadeIn 0.3s ease;
 }
 
 .section.active {
     display: block;
+    animation: fadeIn 0.2s ease;
 }
 
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
 }
 
 .section-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 32px;
+    margin-bottom: 24px;
 }
 
 .section-header h1 {
-    font-size: 28px;
-    font-weight: 700;
-    background: var(--gradient-primary);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-}
-
-/* =============================================================================
-   Cards Grid
-   ============================================================================= */
-
-.cards-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 24px;
-}
-
-.card {
-    background: var(--bg-card);
-    border-radius: var(--border-radius);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    overflow: hidden;
-    transition: var(--transition);
-}
-
-.card:hover {
-    transform: translateY(-4px);
-    box-shadow: var(--shadow-lg);
-    border-color: rgba(0, 212, 255, 0.2);
-}
-
-.card-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 20px 24px;
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, transparent 100%);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.card-icon {
-    font-size: 24px;
-}
-
-.card-header h3 {
-    font-size: 16px;
+    font-size: 22px;
     font-weight: 600;
     color: var(--text-primary);
 }
 
+/* =============================================================================
+   Cards & Panels
+   ============================================================================= */
+
+.cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+}
+
+.card,
+.panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+}
+
+.card-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.card-header h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
 .card-body {
-    padding: 24px;
+    padding: 16px;
+}
+
+.panel {
+    padding: 20px;
+    margin-bottom: 16px;
+}
+
+.panel h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 16px;
 }
 
 /* Info Rows */
 .info-row {
     display: flex;
     justify-content: space-between;
-    padding: 12px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
 }
 
 .info-row:last-child {
@@ -264,57 +252,61 @@ body {
 
 .info-row .label {
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 13px;
 }
 
 .info-row .value {
     color: var(--text-primary);
     font-weight: 500;
-    font-size: 14px;
+    font-size: 13px;
 }
 
-/* Progress Bars */
-.progress-container {
-    margin-bottom: 16px;
+/* =============================================================================
+   Progress Bars
+   ============================================================================= */
+
+.resource-item {
+    margin-bottom: 14px;
 }
 
-.progress-container:last-child {
+.resource-item:last-child {
     margin-bottom: 0;
 }
 
-.progress-label {
+.resource-header {
     display: flex;
     justify-content: space-between;
-    margin-bottom: 8px;
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text-secondary);
+    margin-bottom: 6px;
 }
 
 .progress-bar {
-    height: 8px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
+    height: 6px;
+    background: var(--bg-primary);
+    border-radius: 3px;
     overflow: hidden;
 }
 
 .progress-bar.large {
-    height: 12px;
-    border-radius: 6px;
+    height: 8px;
+    border-radius: 4px;
 }
 
 .progress-fill {
     height: 100%;
-    background: var(--gradient-primary);
-    border-radius: 4px;
-    transition: width 0.5s ease;
+    background: var(--accent-primary);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    width: 0%;
 }
 
 .progress-fill.swap {
-    background: var(--gradient-success);
+    background: var(--accent-info);
 }
 
 .progress-fill.disk {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    background: var(--accent-warning);
 }
 
 /* =============================================================================
@@ -324,46 +316,49 @@ body {
 .btn {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 20px;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 14px;
     border: none;
-    border-radius: 8px;
-    font-size: 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     transition: var(--transition);
 }
 
 .btn-primary {
-    background: var(--gradient-primary);
-    color: white;
+    background: var(--accent-primary);
+    color: #000;
 }
 
 .btn-primary:hover {
-    box-shadow: var(--shadow-glow);
-    transform: translateY(-2px);
-}
-
-.btn-success {
-    background: var(--gradient-success);
-    color: white;
-}
-
-.btn-warning {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-    color: white;
+    background: var(--accent-secondary);
 }
 
 .btn-secondary {
     background: var(--bg-hover);
     color: var(--text-primary);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+    background: var(--border-color);
+}
+
+.btn-success {
+    background: var(--accent-success);
+    color: #000;
+}
+
+.btn-danger {
+    background: var(--accent-danger);
+    color: #fff;
 }
 
 .btn-large {
-    padding: 16px 32px;
-    font-size: 16px;
-    border-radius: 12px;
+    padding: 12px 24px;
+    font-size: 14px;
 }
 
 .btn:disabled {
@@ -372,175 +367,159 @@ body {
 }
 
 /* =============================================================================
-   Badges
+   Status Badges
    ============================================================================= */
 
-.status-badges {
+.status-grid {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 16px;
+    flex-direction: column;
+    gap: 10px;
 }
 
-.badge {
-    display: inline-flex;
+.status-item {
+    display: flex;
+    justify-content: space-between;
     align-items: center;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 500;
-    background: rgba(255, 255, 255, 0.1);
+}
+
+.status-label {
+    font-size: 13px;
     color: var(--text-secondary);
 }
 
-.badge.success {
-    background: rgba(16, 185, 129, 0.2);
+.status-badge {
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--bg-hover);
+    color: var(--text-muted);
+}
+
+.status-badge.success {
+    background: rgba(34, 197, 94, 0.15);
     color: var(--accent-success);
 }
 
-.badge.error {
-    background: rgba(239, 68, 68, 0.2);
-    color: var(--accent-error);
+.status-badge.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--accent-danger);
 }
 
-.badge.warning {
-    background: rgba(245, 158, 11, 0.2);
+.status-badge.warning {
+    background: rgba(234, 179, 8, 0.15);
     color: var(--accent-warning);
 }
 
 /* =============================================================================
-   Camera List
+   Camera & Item Lists
    ============================================================================= */
 
-.camera-list {
+.item-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
 }
 
-.camera-item {
+.list-item {
     display: flex;
+    justify-content: space-between;
     align-items: center;
-    gap: 12px;
-    padding: 12px;
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 8px;
-    transition: var(--transition);
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+    font-size: 13px;
 }
 
-.camera-item:hover {
-    background: rgba(255, 255, 255, 0.1);
+.list-item .name {
+    color: var(--text-primary);
 }
 
-.camera-icon {
-    width: 40px;
-    height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--gradient-primary);
-    border-radius: 8px;
-    font-size: 20px;
-}
-
-.camera-info {
-    flex: 1;
-}
-
-.camera-name {
-    font-weight: 500;
-    margin-bottom: 4px;
-}
-
-.camera-device {
-    font-size: 12px;
+.list-item .device {
     color: var(--text-muted);
     font-family: monospace;
+    font-size: 11px;
 }
 
-.camera-type {
-    padding: 4px 10px;
-    border-radius: 12px;
-    font-size: 11px;
+.list-item .tag {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
 }
 
-.camera-type.csi {
-    background: rgba(118, 185, 0, 0.2);
-    color: #76b900;
-}
-
-.camera-type.usb {
-    background: rgba(0, 212, 255, 0.2);
+.list-item .tag.csi {
+    background: rgba(118, 185, 0, 0.15);
     color: var(--accent-primary);
 }
 
-/* =============================================================================
-   Installation Wizard
-   ============================================================================= */
-
-.installation-wizard {
-    background: var(--bg-card);
-    border-radius: var(--border-radius);
-    padding: 32px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+.list-item .tag.usb {
+    background: rgba(59, 130, 246, 0.15);
+    color: var(--accent-info);
 }
 
-.wizard-steps {
+.camera-grid {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    margin-bottom: 32px;
+    gap: 10px;
 }
 
-.wizard-step {
+/* =============================================================================
+   Installation Steps
+   ============================================================================= */
+
+.install-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.step {
     display: flex;
     align-items: center;
-    gap: 20px;
-    padding: 20px 24px;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    transition: var(--transition);
+    gap: 14px;
+    padding: 14px 16px;
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+    border: 1px solid transparent;
 }
 
-.wizard-step.running {
-    background: rgba(0, 212, 255, 0.1);
-    border-color: rgba(0, 212, 255, 0.3);
+.step.running {
+    border-color: var(--accent-primary);
+    background: rgba(118, 185, 0, 0.05);
 }
 
-.wizard-step.success {
-    background: rgba(16, 185, 129, 0.1);
-    border-color: rgba(16, 185, 129, 0.3);
+.step.success {
+    border-color: var(--accent-success);
 }
 
-.wizard-step.error {
-    background: rgba(239, 68, 68, 0.1);
-    border-color: rgba(239, 68, 68, 0.3);
+.step.error {
+    border-color: var(--accent-danger);
 }
 
-.step-number {
-    width: 40px;
-    height: 40px;
+.step-indicator {
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--bg-hover);
     border-radius: 50%;
+    font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
 }
 
-.wizard-step.running .step-number {
+.step.running .step-indicator {
     background: var(--accent-primary);
-    color: white;
-    animation: pulse 1s infinite;
+    color: #000;
 }
 
-.wizard-step.success .step-number {
+.step.success .step-indicator {
     background: var(--accent-success);
-    color: white;
+    color: #000;
 }
 
 .step-content {
@@ -548,128 +527,134 @@ body {
 }
 
 .step-content h4 {
-    font-size: 16px;
-    font-weight: 600;
-    margin-bottom: 4px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 2px;
 }
 
 .step-content p {
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text-muted);
 }
 
 .step-status {
-    font-size: 24px;
+    font-size: 12px;
+    color: var(--text-muted);
 }
 
-.wizard-actions {
+.step.running .step-status {
+    color: var(--accent-primary);
+}
+
+.step.success .step-status {
+    color: var(--accent-success);
+}
+
+.step.error .step-status {
+    color: var(--accent-danger);
+}
+
+.install-options {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-top: 24px;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    gap: 20px;
+    margin-bottom: 20px;
+    padding: 14px;
+    background: var(--bg-primary);
+    border-radius: var(--radius);
 }
 
-.step-selection {
-    display: flex;
-    gap: 24px;
-}
-
-.checkbox-label {
+.checkbox {
     display: flex;
     align-items: center;
     gap: 8px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 13px;
     color: var(--text-secondary);
 }
 
-.checkbox-label input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
+.checkbox input {
+    width: 16px;
+    height: 16px;
     accent-color: var(--accent-primary);
 }
 
-/* =============================================================================
-   GStreamer Panel
-   ============================================================================= */
-
-.gstreamer-panel {
-    background: var(--bg-card);
-    border-radius: var(--border-radius);
-    padding: 24px;
-    margin-top: 24px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
+.install-actions {
+    text-align: center;
 }
 
-.gstreamer-panel h2 {
-    font-size: 18px;
-    margin-bottom: 20px;
-    color: var(--text-primary);
+.progress-panel {
+    margin-top: 20px;
+    padding: 14px;
+    background: var(--bg-primary);
+    border-radius: var(--radius);
 }
 
-.gst-info {
+.progress-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 16px;
-}
-
-.gst-version {
-    font-size: 14px;
-}
-
-.gst-version .label {
-    color: var(--text-muted);
-    margin-right: 8px;
-}
-
-.gst-version .value {
-    font-weight: 600;
-    color: var(--accent-primary);
-}
-
-.gst-plugins {
-    display: flex;
-    gap: 12px;
-}
-
-.plugin-badge {
-    padding: 8px 16px;
-    border-radius: 20px;
     font-size: 12px;
-    font-weight: 500;
-    background: rgba(255, 255, 255, 0.1);
     color: var(--text-secondary);
+    margin-bottom: 8px;
 }
 
-.plugin-badge.active {
-    background: rgba(16, 185, 129, 0.2);
+/* =============================================================================
+   GStreamer & Plugins
+   ============================================================================= */
+
+.gst-status {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.plugin-list {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.plugin {
+    padding: 6px 12px;
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-family: monospace;
+    color: var(--text-muted);
+}
+
+.plugin.active {
+    background: rgba(34, 197, 94, 0.1);
     color: var(--accent-success);
 }
 
-.plugin-badge.inactive {
-    background: rgba(239, 68, 68, 0.2);
-    color: var(--accent-error);
+.plugin.inactive {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--accent-danger);
 }
 
 /* =============================================================================
-   Log Panel
+   Action Bar
+   ============================================================================= */
+
+.action-bar {
+    display: flex;
+    gap: 10px;
+}
+
+/* =============================================================================
+   Logs
    ============================================================================= */
 
 .log-panel {
-    background: var(--bg-card);
-    border-radius: var(--border-radius);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    overflow: hidden;
+    padding: 0;
 }
 
 .log-output {
-    padding: 24px;
+    padding: 16px;
     margin: 0;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 13px;
+    font-family: 'Ubuntu Mono', 'Consolas', monospace;
+    font-size: 12px;
     line-height: 1.6;
     color: var(--text-secondary);
     background: transparent;
@@ -680,60 +665,49 @@ body {
 }
 
 /* =============================================================================
-   Loading & Utility Classes
+   Utilities
    ============================================================================= */
 
-.loading-spinner {
-    text-align: center;
+.loading {
     color: var(--text-muted);
-    font-size: 14px;
-    padding: 20px;
+    font-size: 13px;
+    padding: 10px;
 }
 
 .muted {
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 13px;
 }
 
 /* =============================================================================
-   Responsive Design
+   Responsive
    ============================================================================= */
-
-@media (max-width: 1200px) {
-    .cards-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
 
 @media (max-width: 768px) {
     .sidebar {
-        width: 70px;
+        width: 60px;
     }
-    
+
     .logo-text,
     .nav-item span:not(.nav-icon) {
         display: none;
     }
-    
+
     .nav-item {
         justify-content: center;
+        padding: 12px;
     }
-    
+
     .main-content {
-        margin-left: 70px;
+        margin-left: 60px;
         padding: 16px;
     }
-    
+
     .cards-grid {
         grid-template-columns: 1fr;
     }
-    
-    .wizard-actions {
-        flex-direction: column;
-        gap: 16px;
-    }
-    
-    .step-selection {
+
+    .install-options {
         flex-wrap: wrap;
     }
 }

@@ -2,6 +2,7 @@
 """
 Jetson Arducam AI Kit - Web GUI
 A modern web interface for camera setup and system management.
+Now with Live Video Preview!
 """
 
 import os
@@ -10,6 +11,8 @@ import json
 import subprocess
 import threading
 import queue
+import time
+import cv2  # OpenCV for video capture
 from datetime import datetime
 from flask import Flask, render_template, jsonify, request, Response
 from flask_socketio import SocketIO, emit
@@ -22,6 +25,8 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 system_info = {}
 installation_log = queue.Queue()
 installation_running = False
+camera_lock = threading.Lock()
+current_camera = None
 
 # =============================================================================
 # SYSTEM DETECTION FUNCTIONS
@@ -165,12 +170,21 @@ def get_camera_info():
                 camera_addrs = {'1a': 'IMX219', '10': 'IMX477/519', '3c': 'OV5647'}
                 for addr, model in camera_addrs.items():
                     if addr in output.lower():
-                        cameras.append({
-                            'name': f'{model} (I2C Bus {bus})',
-                            'device': f'/dev/i2c-{bus}',
-                            'type': 'CSI',
-                            'i2c_address': addr
-                        })
+                        # Avoid duplicates if already found by v4l2-ctl
+                        found = False
+                        for c in cameras:
+                            if c['type'] == 'CSI': 
+                                found = True
+                                c['i2c_address'] = addr
+                                break
+                        
+                        if not found:
+                            cameras.append({
+                                'name': f'{model} (I2C Bus {bus})',
+                                'device': f'/dev/i2c-{bus}',
+                                'type': 'CSI',
+                                'i2c_address': addr
+                            })
     except:
         pass
     
@@ -203,7 +217,7 @@ def get_docker_info():
             
             # List images
             result = subprocess.run(
-                ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}} ({{.Size}})'],
+                ['docker', 'images', '--format', '{{.Repository}}:{{.Tag}}'],
                 capture_output=True, text=True
             )
             if result.returncode == 0:
@@ -211,7 +225,7 @@ def get_docker_info():
             
             # List containers
             result = subprocess.run(
-                ['docker', 'ps', '-a', '--format', '{{.Names}} - {{.Status}}'],
+                ['docker', 'ps', '-a', '--format', '{{.Names}}'],
                 capture_output=True, text=True
             )
             if result.returncode == 0:
@@ -248,7 +262,6 @@ def get_gstreamer_info():
         
         # Check OpenCV GStreamer support
         try:
-            import cv2
             info['opencv_gst'] = 'GStreamer' in cv2.getBuildInformation()
         except:
             pass
@@ -257,6 +270,46 @@ def get_gstreamer_info():
     
     return info
 
+# =============================================================================
+# VIDEO STREAMING CLASS
+# =============================================================================
+
+class VideoCamera(object):
+    def __init__(self, sensor_id=0):
+        self.video = None
+        
+        # GStreamer pipeline for Jetson CSI Camera (ISP)
+        # 720p @ 30fps is a safe default
+        gst_pipeline = (
+            f"nvarguscamerasrc sensor-id={sensor_id} ! "
+            "video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, format=(string)NV12, framerate=(fraction)30/1 ! "
+            "nvvidconv ! video/x-raw, format=(string)BGRx ! "
+            "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+        )
+        
+        # Try GStreamer first
+        try:
+            print(f"Opening GStreamer pipeline: {gst_pipeline}")
+            self.video = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+        except Exception as e:
+            print(f"GStreamer failed: {e}")
+        
+        # Fallback to USB Camera / V4L2
+        if not self.video or not self.video.isOpened():
+            print(f"Falling back to V4L2 device {sensor_id}")
+            self.video = cv2.VideoCapture(sensor_id)
+    
+    def __del__(self):
+        if self.video:
+            self.video.release()
+    
+    def get_frame(self):
+        success, image = self.video.read()
+        if success:
+            # Encode as JPEG
+            ret, jpeg = cv2.imencode('.jpg', image)
+            return jpeg.tobytes()
+        return None
 
 # =============================================================================
 # ROUTES
@@ -286,6 +339,57 @@ def api_refresh_cameras():
     return jsonify({'cameras': get_camera_info()})
 
 
+def gen(camera):
+    """Video streaming generator function."""
+    while True:
+        frame = camera.get_frame()
+        if frame:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        else:
+            time.sleep(0.1)
+
+
+@app.route('/api/video-feed')
+def video_feed():
+    """Video streaming route."""
+    global current_camera
+    
+    # Get sensor ID from query param
+    sensor_id = request.args.get('sensor', 0, type=int)
+    
+    # Release previous camera if exists
+    with camera_lock:
+        if current_camera:
+            del current_camera
+        current_camera = VideoCamera(sensor_id)
+    
+    return Response(gen(current_camera),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+@app.route('/api/stop-video')
+def stop_video():
+    """Stop video capture to free resources."""
+    global current_camera
+    with camera_lock:
+        if current_camera:
+            del current_camera
+            current_camera = None
+    return jsonify({'status': 'stopped'})
+
+
+@app.route('/api/stop-container', methods=['POST'])
+def stop_container_route():
+    """Stop running Docker containers."""
+    try:
+        container_name = "jetson-arducam-ctr"
+        subprocess.run(['docker', 'stop', container_name], check=False)
+        return jsonify({'status': 'stopped'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
 # =============================================================================
 # SOCKETIO EVENTS FOR REAL-TIME INSTALLATION
 # =============================================================================
@@ -310,12 +414,16 @@ def run_installation(steps):
         if step in script_map:
             script_path = os.path.join(script_dir, script_map[step])
             try:
+                # Use stdbuf or unbuffer if available to force line buffering
+                cmd = ['bash', script_path]
+                
                 process = subprocess.Popen(
-                    ['bash', script_path],
+                    cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    cwd=script_dir
+                    cwd=script_dir,
+                    bufsize=1  # Line buffered
                 )
                 
                 for line in iter(process.stdout.readline, ''):
@@ -343,12 +451,6 @@ def handle_start_installation(data):
     thread.daemon = True
     thread.start()
     emit('installation_started', {'steps': steps})
-
-
-@socketio.on('connect')
-def handle_connect():
-    """Handle client connection."""
-    emit('connected', {'status': 'ok'})
 
 
 # =============================================================================

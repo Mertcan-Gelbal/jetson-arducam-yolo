@@ -1,13 +1,13 @@
 /**
  * Jetson Arducam AI Kit - Dashboard JavaScript
+ * Clean, minimal implementation for Ubuntu/Jetson
  */
 
-// Socket.IO Connection
 const socket = io();
 
-// State
 let systemInfo = null;
 let installationRunning = false;
+let videoStream = null;
 
 // =============================================================================
 // INITIALIZATION
@@ -24,61 +24,44 @@ document.addEventListener('DOMContentLoaded', () => {
 // =============================================================================
 
 function initNavigation() {
-    const navItems = document.querySelectorAll('.nav-item');
-
-    navItems.forEach(item => {
+    document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
             const section = item.dataset.section;
 
-            // Update nav active state
-            navItems.forEach(nav => nav.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
             item.classList.add('active');
 
-            // Show corresponding section
             document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
             document.getElementById(section).classList.add('active');
+
+            // Stop video when leaving cameras section
+            if (section !== 'cameras' && videoStream) {
+                stopVideoPreview();
+            }
         });
     });
 }
 
 // =============================================================================
-// SOCKET.IO EVENTS
+// SOCKET EVENTS
 // =============================================================================
 
 function initSocketEvents() {
-    socket.on('connect', () => {
-        updateConnectionStatus(true);
-    });
-
-    socket.on('disconnect', () => {
-        updateConnectionStatus(false);
-    });
-
-    socket.on('connected', (data) => {
-        console.log('Connected to server:', data);
-    });
+    socket.on('connect', () => updateConnectionStatus(true));
+    socket.on('disconnect', () => updateConnectionStatus(false));
 
     socket.on('installation_started', (data) => {
-        console.log('Installation started:', data);
         installationRunning = true;
         updateInstallationUI(true);
     });
 
-    socket.on('installation_step', (data) => {
-        updateStepStatus(data.step, data.status);
-    });
-
-    socket.on('installation_log', (data) => {
-        appendLog(data.line);
-    });
+    socket.on('installation_step', (data) => updateStepStatus(data.step, data.status));
+    socket.on('installation_log', (data) => appendLog(data.line));
 
     socket.on('installation_complete', (data) => {
         installationRunning = false;
         updateInstallationUI(false);
-        if (data.success) {
-            showNotification('Installation completed successfully!', 'success');
-        }
     });
 }
 
@@ -86,17 +69,12 @@ function updateConnectionStatus(connected) {
     const dot = document.getElementById('connectionDot');
     const text = document.getElementById('connectionText');
 
-    if (connected) {
-        dot.classList.add('connected');
-        text.textContent = 'Connected';
-    } else {
-        dot.classList.remove('connected');
-        text.textContent = 'Disconnected';
-    }
+    dot.classList.toggle('connected', connected);
+    text.textContent = connected ? 'Connected' : 'Disconnected';
 }
 
 // =============================================================================
-// API CALLS
+// API
 // =============================================================================
 
 async function refreshSystemInfo() {
@@ -114,151 +92,210 @@ async function refreshCameras() {
         const response = await fetch('/api/refresh-cameras');
         const data = await response.json();
         updateCameraList(data.cameras);
+        updateCameraGrid(data.cameras);
     } catch (error) {
         console.error('Failed to refresh cameras:', error);
     }
 }
 
 // =============================================================================
-// UI UPDATES
+// DASHBOARD UPDATE
 // =============================================================================
 
 function updateDashboard(info) {
-    // Jetson Info
     if (info.jetson) {
-        document.getElementById('jetsonModel').textContent = info.jetson.model || 'Unknown';
-        document.getElementById('jetpackVersion').textContent = info.jetson.jetpack_version || '--';
-        document.getElementById('l4tVersion').textContent = info.jetson.l4t_version || '--';
-        document.getElementById('ubuntuVersion').textContent = info.jetson.ubuntu_version || '--';
+        const j = info.jetson;
+        setText('jetsonModel', j.model || '--');
+        setText('jetpackVersion', j.jetpack_version || '--');
+        setText('l4tVersion', j.l4t_version || '--');
+        setText('ubuntuVersion', j.ubuntu_version || '--');
+        setText('cudaVersion', j.cuda_version || '--');
 
         // Memory
-        const memTotal = info.jetson.memory_total;
-        const memAvail = info.jetson.memory_available;
-        const memUsed = memTotal - memAvail;
-        const memPercent = memTotal > 0 ? (memUsed / memTotal) * 100 : 0;
+        const memUsed = j.memory_total - j.memory_available;
+        const memPercent = j.memory_total > 0 ? (memUsed / j.memory_total) * 100 : 0;
+        setText('ramUsage', `${memUsed} / ${j.memory_total} MB`);
+        setProgress('ramProgress', memPercent);
 
-        document.getElementById('ramUsage').textContent = `${memUsed} / ${memTotal} MB`;
-        document.getElementById('ramProgress').style.width = `${memPercent}%`;
+        setText('swapUsage', `${j.swap_total} MB`);
+        setProgress('swapProgress', j.swap_total > 0 ? 50 : 0);
 
-        // Swap
-        document.getElementById('swapUsage').textContent = `${info.jetson.swap_total} MB`;
-        document.getElementById('swapProgress').style.width = info.jetson.swap_total > 0 ? '100%' : '0%';
-
-        // Disk
-        const diskTotal = Math.round(info.jetson.disk_total / 1024);
-        const diskAvail = Math.round(info.jetson.disk_available / 1024);
+        const diskTotal = Math.round(j.disk_total / 1024);
+        const diskAvail = Math.round(j.disk_available / 1024);
         const diskUsed = diskTotal - diskAvail;
         const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
-
-        document.getElementById('diskUsage').textContent = `${diskUsed} / ${diskTotal} GB`;
-        document.getElementById('diskProgress').style.width = `${diskPercent}%`;
+        setText('diskUsage', `${diskUsed} / ${diskTotal} GB`);
+        setProgress('diskProgress', diskPercent);
     }
 
-    // Cameras
-    if (info.cameras) {
-        updateCameraList(info.cameras);
-    }
-
-    // Docker
-    if (info.docker) {
-        updateDockerStatus(info.docker);
-    }
-
-    // GStreamer
-    if (info.gstreamer) {
-        updateGstreamerStatus(info.gstreamer);
-    }
+    if (info.cameras) updateCameraList(info.cameras);
+    if (info.docker) updateDockerStatus(info.docker);
+    if (info.gstreamer) updateGstreamerStatus(info.gstreamer);
 }
+
+function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
+function setProgress(id, percent) {
+    const el = document.getElementById(id);
+    if (el) el.style.width = `${Math.min(100, percent)}%`;
+}
+
+// =============================================================================
+// CAMERA LIST
+// =============================================================================
 
 function updateCameraList(cameras) {
     const listEl = document.getElementById('cameraList');
-    const detailEl = document.getElementById('detectedCameras');
+    if (!listEl) return;
 
-    if (cameras.length === 0) {
+    if (!cameras || cameras.length === 0) {
         listEl.innerHTML = '<p class="muted">No cameras detected</p>';
-        if (detailEl) detailEl.innerHTML = '<p class="muted">No cameras detected. Check connections.</p>';
         return;
     }
 
-    let html = '';
-    cameras.forEach(cam => {
-        const typeClass = cam.type === 'CSI' ? 'csi' : 'usb';
-        html += `
-            <div class="camera-item">
-                <div class="camera-icon">📷</div>
-                <div class="camera-info">
-                    <div class="camera-name">${cam.name}</div>
-                    <div class="camera-device">${cam.device}</div>
-                </div>
-                <span class="camera-type ${typeClass}">${cam.type}</span>
+    listEl.innerHTML = cameras.map(cam => `
+        <div class="list-item">
+            <div>
+                <div class="name">${cam.name}</div>
+                <div class="device">${cam.device}</div>
             </div>
-        `;
-    });
-
-    listEl.innerHTML = html;
-    if (detailEl) detailEl.innerHTML = html;
+            <span class="tag ${cam.type.toLowerCase()}">${cam.type}</span>
+        </div>
+    `).join('');
 }
+
+function updateCameraGrid(cameras) {
+    const gridEl = document.getElementById('detectedCameras');
+    if (!gridEl) return;
+
+    if (!cameras || cameras.length === 0) {
+        gridEl.innerHTML = '<p class="muted">No cameras detected. Check cable connections.</p>';
+        return;
+    }
+
+    gridEl.innerHTML = cameras.map((cam, idx) => `
+        <div class="camera-card">
+            <div class="camera-card-header">
+                <span class="camera-name">${cam.name}</span>
+                <span class="tag ${cam.type.toLowerCase()}">${cam.type}</span>
+            </div>
+            <div class="camera-card-body">
+                <div class="camera-info-row">
+                    <span>Device</span>
+                    <code>${cam.device}</code>
+                </div>
+                ${cam.i2c_address ? `
+                <div class="camera-info-row">
+                    <span>I2C Address</span>
+                    <code>0x${cam.i2c_address}</code>
+                </div>
+                ` : ''}
+            </div>
+            <div class="camera-card-actions">
+                <button class="btn btn-primary btn-small" onclick="startVideoPreview('${cam.device}', ${idx})">
+                    Preview
+                </button>
+                <button class="btn btn-secondary btn-small" onclick="testCamera('${cam.device}')">
+                    Test
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
+// =============================================================================
+// VIDEO PREVIEW
+// =============================================================================
+
+function startVideoPreview(device, sensorId) {
+    const previewPanel = document.getElementById('videoPreviewPanel');
+    const previewImage = document.getElementById('videoPreview');
+    const deviceLabel = document.getElementById('previewDevice');
+
+    if (previewPanel && previewImage) {
+        previewPanel.style.display = 'block';
+        deviceLabel.textContent = device;
+
+        // Use MJPEG stream from backend
+        previewImage.src = `/api/video-feed?device=${encodeURIComponent(device)}&sensor=${sensorId}`;
+        videoStream = true;
+    }
+}
+
+function stopVideoPreview() {
+    const previewPanel = document.getElementById('videoPreviewPanel');
+    const previewImage = document.getElementById('videoPreview');
+
+    if (previewPanel) {
+        previewPanel.style.display = 'none';
+    }
+    if (previewImage) {
+        previewImage.src = '';
+    }
+
+    // Notify backend to stop stream
+    fetch('/api/stop-video').catch(() => { });
+    videoStream = null;
+}
+
+function testCamera(device) {
+    appendLog(`Testing camera: ${device}`);
+    socket.emit('test_camera', { device });
+}
+
+// =============================================================================
+// DOCKER STATUS
+// =============================================================================
 
 function updateDockerStatus(docker) {
-    // Badges
-    const installed = document.getElementById('dockerInstalled');
-    const running = document.getElementById('dockerRunning');
-    const nvidia = document.getElementById('nvidiaRuntime');
+    setBadge('dockerInstalled', docker.installed ? 'Installed' : 'Not Found', docker.installed);
+    setBadge('dockerRunning', docker.running ? 'Running' : 'Stopped', docker.running);
+    setBadge('nvidiaRuntime', docker.nvidia_runtime ? 'Enabled' : 'Disabled', docker.nvidia_runtime);
 
-    installed.textContent = `Docker: ${docker.installed ? 'Installed' : 'Not Found'}`;
-    installed.className = `badge ${docker.installed ? 'success' : 'error'}`;
-
-    running.textContent = `Service: ${docker.running ? 'Running' : 'Stopped'}`;
-    running.className = `badge ${docker.running ? 'success' : 'warning'}`;
-
-    nvidia.textContent = `NVIDIA: ${docker.nvidia_runtime ? 'Enabled' : 'Disabled'}`;
-    nvidia.className = `badge ${docker.nvidia_runtime ? 'success' : 'warning'}`;
-
-    // Images
-    const imagesEl = document.getElementById('dockerImages');
-    if (docker.images && docker.images.length > 0) {
-        imagesEl.innerHTML = docker.images.map(img =>
-            `<div class="info-row"><span class="value">${img}</span></div>`
-        ).join('');
-    } else {
-        imagesEl.innerHTML = '<p class="muted">No images found</p>';
-    }
-
-    // Container list (Docker section)
     const containerList = document.getElementById('containerList');
+    const imageList = document.getElementById('imageList');
+
     if (containerList) {
-        if (docker.containers && docker.containers.length > 0) {
-            containerList.innerHTML = docker.containers.map(c =>
-                `<div class="info-row"><span class="value">${c}</span></div>`
-            ).join('');
-        } else {
-            containerList.innerHTML = '<p class="muted">No containers found</p>';
-        }
+        containerList.innerHTML = docker.containers?.length > 0
+            ? docker.containers.map(c => `<div class="list-item"><span class="name">${c}</span></div>`).join('')
+            : '<p class="muted">No containers</p>';
     }
 
-    // Image list (Docker section)
-    const imageList = document.getElementById('imageList');
     if (imageList) {
-        if (docker.images && docker.images.length > 0) {
-            imageList.innerHTML = docker.images.map(img =>
-                `<div class="info-row"><span class="value">${img}</span></div>`
-            ).join('');
-        } else {
-            imageList.innerHTML = '<p class="muted">No images found</p>';
-        }
+        imageList.innerHTML = docker.images?.length > 0
+            ? docker.images.map(i => `<div class="list-item"><span class="name">${i}</span></div>`).join('')
+            : '<p class="muted">No images</p>';
     }
 }
 
+function setBadge(id, text, isSuccess) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.textContent = text;
+        el.className = `status-badge ${isSuccess ? 'success' : 'error'}`;
+    }
+}
+
+// =============================================================================
+// GSTREAMER STATUS
+// =============================================================================
+
 function updateGstreamerStatus(gst) {
-    document.getElementById('gstVersion').textContent = gst.version || '--';
+    setText('gstVersion', gst.version || '--');
 
-    const nvargus = document.getElementById('pluginNvargus');
-    const nvvidconv = document.getElementById('pluginNvvidconv');
-    const opencv = document.getElementById('pluginOpenCV');
+    setPluginStatus('pluginNvargus', gst.nvarguscamerasrc);
+    setPluginStatus('pluginNvvidconv', gst.nvvidconv);
+    setPluginStatus('pluginOpenCV', gst.opencv_gst);
+}
 
-    nvargus.className = `plugin-badge ${gst.nvarguscamerasrc ? 'active' : 'inactive'}`;
-    nvvidconv.className = `plugin-badge ${gst.nvvidconv ? 'active' : 'inactive'}`;
-    opencv.className = `plugin-badge ${gst.opencv_gst ? 'active' : 'inactive'}`;
+function setPluginStatus(id, active) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.className = `plugin ${active ? 'active' : 'inactive'}`;
+    }
 }
 
 // =============================================================================
@@ -269,27 +306,27 @@ function startInstallation() {
     if (installationRunning) return;
 
     const steps = [];
-    if (document.getElementById('checkDrivers').checked) steps.push('drivers');
-    if (document.getElementById('checkVerify').checked) steps.push('verify');
-    if (document.getElementById('checkBuild').checked) steps.push('build');
-    if (document.getElementById('checkRun').checked) steps.push('run');
+    if (document.getElementById('checkDrivers')?.checked) steps.push('drivers');
+    if (document.getElementById('checkVerify')?.checked) steps.push('verify');
+    if (document.getElementById('checkBuild')?.checked) steps.push('build');
+    if (document.getElementById('checkRun')?.checked) steps.push('run');
 
     if (steps.length === 0) {
-        showNotification('Please select at least one step', 'warning');
+        alert('Please select at least one step');
         return;
     }
 
-    // Reset step UI
+    // Reset UI
     ['drivers', 'verify', 'build', 'run'].forEach(step => {
         const el = document.getElementById(`step-${step}`);
-        el.classList.remove('running', 'success', 'error');
-        el.querySelector('.status-icon').textContent = '⏳';
+        if (el) {
+            el.classList.remove('running', 'success', 'error');
+            const status = document.getElementById(`status-${step}`);
+            if (status) status.textContent = 'Pending';
+        }
     });
 
-    // Clear logs
     document.getElementById('logOutput').textContent = '';
-
-    // Start installation
     socket.emit('start_installation', { steps });
 }
 
@@ -297,44 +334,29 @@ function updateInstallationUI(running) {
     const btn = document.getElementById('startInstallBtn');
     const progress = document.getElementById('installProgress');
 
-    if (running) {
-        btn.disabled = true;
-        btn.innerHTML = '<span>⏳</span> Installing...';
-        progress.style.display = 'block';
-    } else {
-        btn.disabled = false;
-        btn.innerHTML = '<span>🚀</span> Start Installation';
-        progress.style.display = 'none';
+    if (btn) {
+        btn.disabled = running;
+        btn.textContent = running ? 'Installing...' : 'Start Installation';
+    }
+    if (progress) {
+        progress.style.display = running ? 'block' : 'none';
     }
 }
 
 function updateStepStatus(step, status) {
     const el = document.getElementById(`step-${step}`);
-    if (!el) return;
+    const statusEl = document.getElementById(`status-${step}`);
 
-    el.classList.remove('running', 'success', 'error');
-
-    const statusIcon = el.querySelector('.status-icon');
-
-    switch (status) {
-        case 'running':
-            el.classList.add('running');
-            statusIcon.textContent = '⏳';
-            break;
-        case 'success':
-            el.classList.add('success');
-            statusIcon.textContent = '✅';
-            break;
-        case 'error':
-            el.classList.add('error');
-            statusIcon.textContent = '❌';
-            break;
-        case 'skipped':
-            statusIcon.textContent = '⏭️';
-            break;
+    if (el) {
+        el.classList.remove('running', 'success', 'error');
+        if (status !== 'pending') el.classList.add(status);
     }
 
-    // Update progress bar
+    if (statusEl) {
+        const labels = { running: 'Running...', success: 'Complete', error: 'Failed', pending: 'Pending' };
+        statusEl.textContent = labels[status] || status;
+    }
+
     updateProgressBar();
 }
 
@@ -344,14 +366,14 @@ function updateProgressBar() {
 
     steps.forEach(step => {
         const el = document.getElementById(`step-${step}`);
-        if (el.classList.contains('success') || el.classList.contains('error')) {
+        if (el?.classList.contains('success') || el?.classList.contains('error')) {
             completed++;
         }
     });
 
     const percent = (completed / steps.length) * 100;
-    document.getElementById('installProgressBar').style.width = `${percent}%`;
-    document.getElementById('progressPercent').textContent = `${Math.round(percent)}%`;
+    setProgress('installProgressBar', percent);
+    setText('progressPercent', `${Math.round(percent)}%`);
 }
 
 // =============================================================================
@@ -360,12 +382,15 @@ function updateProgressBar() {
 
 function appendLog(line) {
     const logEl = document.getElementById('logOutput');
-    logEl.textContent += line + '\n';
-    logEl.scrollTop = logEl.scrollHeight;
+    if (logEl) {
+        logEl.textContent += line + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+    }
 }
 
 function clearLogs() {
-    document.getElementById('logOutput').textContent = 'Logs cleared.\n';
+    const logEl = document.getElementById('logOutput');
+    if (logEl) logEl.textContent = '';
 }
 
 // =============================================================================
@@ -377,18 +402,6 @@ function runScript(script) {
 }
 
 function stopContainer() {
-    // This would need a backend endpoint
-    showNotification('Stopping container...', 'info');
-}
-
-// =============================================================================
-// NOTIFICATIONS
-// =============================================================================
-
-function showNotification(message, type = 'info') {
-    // Simple console log for now
-    console.log(`[${type.toUpperCase()}] ${message}`);
-
-    // Could be enhanced with toast notifications
-    alert(message);
+    appendLog('Stopping container...');
+    fetch('/api/stop-container', { method: 'POST' }).catch(() => { });
 }
