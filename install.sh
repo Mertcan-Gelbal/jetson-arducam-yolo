@@ -21,8 +21,10 @@ NC='\033[0m'
 show_help() {
     echo "Usage: ./install.sh [OPTION]"
     echo ""
+    echo "Running without options performs full installation."
+    echo ""
     echo "Options:"
-    echo "  --all        Full installation (Drivers -> Verify -> Build -> Run)"
+    echo "  (none)       Full installation (Drivers -> Verify -> Build)"
     echo "  --drivers    Run only Camera Setup Wizard"
     echo "  --verify     Run only system diagnostics"
     echo "  --build      Build/Rebuild Docker environment"
@@ -64,12 +66,12 @@ case "$1" in
         log_info "Launching Container..."
         ./scripts/run_docker.sh
         ;;
-    --all|"")
-        if [ -z "$1" ]; then
-            log_info "Starting Interactive Full Installation..."
-        else
-            log_info "Starting Automated Full Installation..."
-        fi
+    --help)
+        show_help
+        ;;
+    "")
+        # Default: Full Installation
+        log_info "Starting Full Installation..."
         
         # 1. Hardware
         ./scripts/setup_cameras.sh
@@ -102,9 +104,6 @@ case "$1" in
         echo -e "  - Run AI Demo:       ${YELLOW}python3 examples/basic_detection.py --source-type csi${NC}"
         echo ""
         echo "Enjoy your Jetson Arducam AI Kit!"
-        ;;
-    --help)
-        show_help
         ;;
     *)
         log_error "Unknown option: $1\nUse --help for usage instructions."
