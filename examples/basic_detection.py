@@ -11,10 +11,14 @@ import argparse
 
 
 def main():
-    parser = argparse.ArgumentParser(description='YOLOv8 Basic Detection')
-    parser.add_argument('--source-type', type=str, default='csi', choices=['csi', 'usb'], help='Camera type: csi or usb')
+    parser.add_argument('--model', type=str, default='yolo11n.pt', help='Model path (.pt or .engine)')
+    parser.add_argument('--camera', type=int, default=0, help='Camera ID')
     parser.add_argument('--width', type=int, default=1280, help='Camera width')
     parser.add_argument('--height', type=int, default=720, help='Camera height')
+    parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold')
+    parser.add_argument('--iou', type=float, default=0.45, help='IOU threshold')
+    parser.add_argument('--imgsz', type=int, default=640, help='Inference image size')
+    parser.add_argument('--display', action='store_true', help='Show display window')
     args = parser.parse_args()
 
     # Load YOLO Model

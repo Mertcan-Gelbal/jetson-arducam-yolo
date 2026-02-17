@@ -12,13 +12,15 @@ import cv2
 import numpy as np
 
 
-def export_to_tensorrt(model_path, half=True, workspace=4, verbose=True):
+def export_to_tensorrt(model_path, half=True, int8=False, data=None, workspace=4, verbose=True):
     """
     Export YOLOv8 model to TensorRT engine
     
     Args:
         model_path: Path to PyTorch model (.pt)
         half: Use FP16 precision (faster on Jetson)
+        int8: Use INT8 precision (requires calibration)
+        data: Path to YAML file for INT8 calibration dataset (optional)
         workspace: GPU workspace size in GB
         verbose: Print detailed export info
     
@@ -30,14 +32,19 @@ def export_to_tensorrt(model_path, half=True, workspace=4, verbose=True):
     model = YOLO(model_path)
     
     print("\nExporting to TensorRT...")
-    print(f"  Precision: {'FP16' if half else 'FP32'}")
+    precision = "INT8" if int8 else ("FP16" if half else "FP32")
+    print(f"  Precision: {precision}")
     print(f"  Workspace: {workspace}GB")
+    if int8 and data:
+        print(f"  Calibration data: {data}")
     
     # Export to TensorRT
     engine_path = model.export(
         format='engine',
         device=0,
         half=half,
+        int8=int8,
+        data=data,
         workspace=workspace,
         verbose=verbose,
         simplify=True
@@ -205,6 +212,8 @@ def main():
     parser.add_argument('--engine', type=str, help='TensorRT engine path (auto-detected if not provided)')
     parser.add_argument('--frames', type=int, default=100, help='Benchmark frames')
     parser.add_argument('--fp32', action='store_true', help='Use FP32 instead of FP16')
+    parser.add_argument('--int8', action='store_true', help='Use INT8 (requires data YAML)')
+    parser.add_argument('--data', type=str, default='coco128.yaml', help='Dataset YAML for INT8 calibration')
     parser.add_argument('--workspace', type=int, default=4, help='GPU workspace in GB')
     args = parser.parse_args()
     
@@ -227,7 +236,9 @@ def main():
     if args.export:
         engine_path = export_to_tensorrt(
             args.model,
-            half=not args.fp32,
+            half=not args.fp32 and not args.int8,
+            int8=args.int8,
+            data=args.data,
             workspace=args.workspace
         )
         args.engine = engine_path

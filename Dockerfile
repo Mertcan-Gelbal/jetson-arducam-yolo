@@ -22,7 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
-RUN pip3 install --no-cache-dir -r /app/requirements.txt
+# Install requirements while protecting system-installed torch/torchvision/opencv
+RUN pip3 install --no-cache-dir --ignore-installed -r /app/requirements.txt \
+    && pip3 install --upgrade setuptools wheel
 
 COPY . /app
 

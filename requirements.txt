@@ -1,5 +1,6 @@
-numpy>=1.22,<1.27
-Pillow>=9.5,<11.0
-pyyaml>=6.0,<7.0
-tqdm>=4.66,<5.0
-ultralytics>=8.2,<9.0
+numpy>=1.22,<1.24
+Pillow>=9.5.0
+pyyaml>=6.0
+tqdm>=4.66.0
+ultralytics==8.3.16
+# Note: torch and torchvision should be handled by the base L4T image

@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  jetson-ai:
+    build:
+      context: .
+      args:
+        # Default to JP 5.x, script will override for JP 6.x
+        - BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
+    image: jetson-arducam:latest
+    container_name: jetson-arducam-ctr
+    runtime: nvidia
+    network_mode: host
+    ipc: host
+    privileged: true
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - .:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/argus_socket:/tmp/argus_socket
+      - /etc/enact:/etc/enact
+      - /dev:/dev
+    working_dir: /workspace
+    restart: unless-stopped
+    command: tail -f /dev/null

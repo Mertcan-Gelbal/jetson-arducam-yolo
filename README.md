@@ -8,7 +8,23 @@ A flexible, production-ready environment for running modern Computer Vision mode
 *   **Dynamic Platform:** Automatically adapts base images for JetPack 5.x or 6.x systems.
 *   **Dual Camera Support:** Full support for both **CSI/MIPI** (Arducam IMX series) and **USB Webcams**.
 *   **Hardware Acceleration:** Optimized GStreamer pipelines for CSI cameras and V4L2 for USB devices.
-*   **TensorRT Ready:** Native tools to convert models to TensorRT for maximum performance.
+*   **TensorRT Ready:** Native tools to convert models to TensorRT (FP16/INT8) for maximum performance.
+*   **Production Focused:** Includes Docker Compose, graceful shutdowns, and headless mode support.
+
+## Compatibility Matrix
+
+| Component | Minimum | Recommended |
+| :--- | :--- | :--- |
+| **Jetson Model** | Xavier NX | Orin Nano / Orin NX |
+| **JetPack** | 5.1 (L4T r35) | 6.x (L4T r36) |
+| **CUDA** | 11.4 | 12.x |
+| **TensorRT** | 8.5.x | 10.x |
+| **Python** | 3.8 | 3.10+ |
+| **Ultralytics** | 8.2 | 8.3 (Latest) |
+
+## Hardware Setup (Arducam CSI)
+
+Before running the AI stack, ensure your Arducam ribbon cable is correctly oriented (Blue side facing *away* from the Jetson Nano/Orin heatsink).
 
 ## Project Structure
 
@@ -38,7 +54,13 @@ The modular installer orchestrates the entire workflow. You can run all steps at
 # Modular options
 ./install.sh --drivers   # Only camera setup
 ./install.sh --build     # Rebuild AI environment
-./install.sh --run       # Start the container
+./install.sh --run       # Start the container (Docker Run)
+
+## Docker Compose (Production)
+For industrial deployments, use the provided compose file:
+```bash
+docker compose up -d
+```
 ```
 
 ## Usage

@@ -42,6 +42,7 @@ sudo docker run -d \
     --privileged \
     -e DISPLAY=$DISPLAY \
     -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+    -v /tmp/argus_socket:/tmp/argus_socket \
     $VIDEO_DEVICES \
     -v $(pwd):/workspace \
     -w /workspace \
