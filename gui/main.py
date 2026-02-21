@@ -507,8 +507,16 @@ class ThemeOps:
         QComboBox {{ padding-right: 30px; }}
         QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; border: none; width: 28px; border-left: 1px solid {brd}; border-top-right-radius: 8px; border-bottom-right-radius: 8px; }}
         QComboBox::down-arrow {{ image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid {sub}; margin-right: 10px; }}
-        QAbstractItemView {{ background-color: {card}; border: 1.2px solid {brd}; color: {txt}; outline: none; selection-background-color: #007AFF; selection-color: white; show-decoration-selected: 1; }}
-        QAbstractItemView::item {{ min-height: 30px; padding: 4px 10px; }}
+        
+        QComboBox QAbstractItemView {{ 
+            background-color: {card}; 
+            border: 1px solid {brd}; 
+            color: {txt}; 
+            outline: 0px;
+            selection-background-color: #007AFF; 
+            selection-color: white; 
+        }}
+        QAbstractItemView::item {{ min-height: 32px; padding: 6px 10px; }}
         QAbstractItemView::item:selected {{ background-color: #007AFF; color: white; }}
         QAbstractItemView::item:hover {{ background-color: rgba(0,122,255,0.18); }}
         QPushButton#NavTab {{ border: none; border-radius: 6px; text-align: left; padding: 12px 18px; color: {sub}; font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }}
