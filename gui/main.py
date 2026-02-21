@@ -700,7 +700,7 @@ class StatsThread(QThread):
 
 class App(QMainWindow):
     def __init__(self):
-        super().__init__(); self.resize(1200, 800); self.setWindowTitle("VISION CORE"); self.is_dark = True
+        super().__init__(); self.resize(1200, 800); self.setWindowTitle("VisionDock"); self.is_dark = True
         self.db = DBManager()
         self.active_cids = set(); self.active_srcs = set()
         c = QWidget(); self.setCentralWidget(c); self.main = QHBoxLayout(c); self.main.setContentsMargins(0,0,0,0); self.main.setSpacing(0)
