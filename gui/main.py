@@ -502,10 +502,14 @@ class ThemeOps:
         QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 12px; }}
         QFrame#ModalBox {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 16px; }}
         QLabel#CardTitle {{ font-weight: 900; font-size: 14px; color: {card_txt}; border: none; background: transparent; letter-spacing: 0.5px; }}
-        QLineEdit, QComboBox {{ background-color: {ibg}; border: 1.2px solid {brd}; border-radius: 8px; padding: 10px 14px; color: {txt}; font-size: 13px; font-weight: 500; }}
+        QLineEdit, QComboBox {{ background-color: {ibg}; border: 1.2px solid {brd}; border-radius: 8px; padding: 6px 14px; color: {txt}; font-size: 13px; font-weight: 500; min-height: 36px; max-height: 36px; selection-background-color: #007AFF; }}
         QLineEdit:focus, QComboBox:focus {{ border-color: #007AFF; background-color: rgba(0,122,255,0.05); }}
-        QComboBox::drop-down {{ border: none; width: 30px; }}
-        QComboBox::down-arrow {{ image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 5px solid {sub}; margin-right: 10px; }}
+        QComboBox {{ padding-right: 30px; }}
+        QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; border: none; width: 28px; border-left: 1px solid {brd}; border-top-right-radius: 8px; border-bottom-right-radius: 8px; }}
+        QComboBox::down-arrow {{ image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid {sub}; margin-right: 10px; }}
+        QComboBox QAbstractItemView {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 8px; color: {txt}; padding: 4px; outline: none; selection-background-color: #007AFF; selection-color: white; }}
+        QComboBox QAbstractItemView::item {{ min-height: 32px; padding: 4px 10px; border-radius: 4px; }}
+        QComboBox QAbstractItemView::item:hover {{ background-color: rgba(0,122,255,0.15); }}
         QPushButton#NavTab {{ border: none; border-radius: 6px; text-align: left; padding: 12px 18px; color: {sub}; font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }}
         QPushButton#NavTab:checked {{ background-color: #007AFF; color: white; }}
         QPushButton#NavTab:hover {{ background-color: {hov}; color: {txt}; }}
