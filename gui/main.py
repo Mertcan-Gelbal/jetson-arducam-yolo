@@ -935,7 +935,7 @@ class App(QMainWindow):
 
     def run_health_check(self):
         results = []
-        results.append(f"Docker: {'✅' if DockerManager.is_running() else '❌'}")
+        results.append(f"Docker: {'ONLINE' if DockerManager.is_running() else 'OFFLINE'}")
         results.append(f"Camera Indices: {list_cameras()}")
         results.append(f"Platform: {platform.system()} {platform.machine()}")
         QMessageBox.information(self, "System Health Report", "\n".join(results))
