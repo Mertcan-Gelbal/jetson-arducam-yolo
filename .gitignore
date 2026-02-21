@@ -90,5 +90,5 @@ wandb/
 gui/*.db
 gui/*.mp4
 gui/*.avi
-gui/*.json
 gui/recordings/
+# NOTE: gui/requirements.txt and gui/catalog.json ARE tracked and should NOT be listed here
