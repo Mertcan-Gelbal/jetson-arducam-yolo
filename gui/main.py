@@ -513,12 +513,21 @@ class ThemeOps:
             border: 1px solid {brd}; 
             color: {txt}; 
             outline: 0px;
-            selection-background-color: #007AFF; 
-            selection-color: white; 
         }}
-        QAbstractItemView::item {{ min-height: 32px; padding: 6px 10px; }}
-        QAbstractItemView::item:selected {{ background-color: #007AFF; color: white; }}
-        QAbstractItemView::item:hover {{ background-color: {hov}; color: {txt}; }}
+        QComboBox QAbstractItemView::item {{ 
+            min-height: 32px; 
+            padding: 6px 10px; 
+            background-color: {card};
+            color: {txt};
+        }}
+        QComboBox QAbstractItemView::item:selected {{ 
+            background-color: #007AFF; 
+            color: white; 
+        }}
+        QComboBox QAbstractItemView::item:hover {{ 
+            background-color: {hov}; 
+            color: {txt}; 
+        }}
         QPushButton#NavTab {{ border: none; border-radius: 6px; text-align: left; padding: 12px 18px; color: {sub}; font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }}
         QPushButton#NavTab:checked {{ background-color: #007AFF; color: white; }}
         QPushButton#NavTab:hover {{ background-color: {hov}; color: {txt}; }}
