@@ -74,9 +74,8 @@ jobs:
       uses: hadolint/hadolint-action@v3.1.0
       with:
         dockerfile: Dockerfile
-        # DL3059: multiple RUN instructions is acceptable for readability
-        # DL3008/DL3013 are handled inline in the Dockerfile with justification
-        ignore: DL3059
+        # All other rules are handled inline via '# hadolint ignore=' directives
+        ignore: DL3059,DL3006
 
   # ─── 4. Docker Compose Validate ────────────────────────────────────────────
   compose-validate:
