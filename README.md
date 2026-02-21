@@ -79,6 +79,17 @@ python3 examples/basic_detection.py --model yolo11n.pt --source-type csi
 python3 examples/basic_detection.py --model yolo11n.pt --source-type usb --camera 0
 ```
 
+### Advanced Spatial Analytics & UDP Streaming
+Run ByteTrack object tracking, region-of-interest counting, and stream the annotated video (H.264 encrypted via hardware NVENC) headless over the network:
+
+```bash
+# Start Tracking + Zone Intrusion + UDP Broadcast
+python3 examples/analytics_detection.py --source-type csi --stream-out --stream-ip <YOUR_PC_IP> --stream-port 5000
+
+# On your local PC, open VLC Player:
+# Open Network Stream -> udp://@5000
+```
+
 ### Expected Performance (Reference)
 Performance measured on Orin Nano (8GB) with TensorRT optimization:
 
