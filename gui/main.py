@@ -475,7 +475,7 @@ class ResizableCard(QFrame):
     def upd_img(self, img):
         if hasattr(self, 'view'):
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB); h,w,c = img_rgb.shape
-            self.view.setPixmap(QPixmap.fromImage(QImage(img_rgb.data, w, h, c*w, QImage.Format_RGB888)).scaled(self.view.size(), Qt.KeepAspectRatio))
+            self.view.setPixmap(QPixmap.fromImage(QImage(img_rgb.data, w, h, c*w, QImage.Format_RGB888)).scaled(self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
 class QSizeGrip(QWidget): 
     def __init__(self, parent): super().__init__(parent); self.setCursor(Qt.SizeFDiagCursor); self.start = None
@@ -499,11 +499,11 @@ class ThemeOps:
     @staticmethod
     def get_style(is_dark):
         if is_dark:
-            bg, sb, card, txt, sub, brd, ibg, hov = "#09090B", "#111114", "#18181B", "#F4F4F5", "#A1A1AA", "#27272A", "#0C0C0E", "rgba(255,255,255,0.04)"
-            ov_bg, card_txt, ihov = "rgba(0,0,0,0.85)", "#FAFAFA", "#27272A"
+            bg, sb, card, txt, sub, brd, ibg, hov = "#000000", "#000000", "#0A0A0A", "#EDEDED", "#737373", "rgba(255,255,255,0.08)", "#121212", "rgba(255,255,255,0.04)"
+            ov_bg, card_txt, ihov = "rgba(0,0,0,0.85)", "#FFFFFF", "#171717"
         else:
-            bg, sb, card, txt, sub, brd, ibg, hov = "#FAFAFA", "#FFFFFF", "#FFFFFF", "#18181B", "#71717A", "#E4E4E7", "#F4F4F5", "rgba(0,0,0,0.03)"
-            ov_bg, card_txt, ihov = "rgba(255,255,255,0.7)", "#09090B", "#F4F4F5"
+            bg, sb, card, txt, sub, brd, ibg, hov = "#FFFFFF", "#FFFFFF", "#F7F7F8", "#111111", "#888888", "#E5E5E5", "#FFFFFF", "rgba(0,0,0,0.03)"
+            ov_bg, card_txt, ihov = "rgba(255,255,255,0.8)", "#000000", "#F1F1F1"
             
         return f"""
         QMainWindow {{ background-color: {bg}; }}
@@ -699,7 +699,7 @@ class StatsThread(QThread):
 
 class App(QMainWindow):
     def __init__(self):
-        super().__init__(); self.resize(1200, 800); self.setWindowTitle("Jetson Studio"); self.is_dark = True
+        super().__init__(); self.resize(1200, 800); self.setWindowTitle("LUMINA EDGE"); self.is_dark = True
         self.db = DBManager()
         self.active_cids = set(); self.active_srcs = set()
         c = QWidget(); self.setCentralWidget(c); self.main = QHBoxLayout(c); self.main.setContentsMargins(0,0,0,0); self.main.setSpacing(0)
