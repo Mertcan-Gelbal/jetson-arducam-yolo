@@ -490,10 +490,10 @@ class ThemeOps:
     def get_style(is_dark):
         if is_dark:
             bg, sb, card, txt, sub, brd, ibg, hov = "#09090B", "#111114", "#18181B", "#F4F4F5", "#A1A1AA", "#27272A", "#0C0C0E", "rgba(255,255,255,0.04)"
-            ov_bg, card_txt = "rgba(0,0,0,0.85)", "#FAFAFA"
+            ov_bg, card_txt, ihov = "rgba(0,0,0,0.85)", "#FAFAFA", "#27272A"
         else:
             bg, sb, card, txt, sub, brd, ibg, hov = "#FAFAFA", "#FFFFFF", "#FFFFFF", "#18181B", "#71717A", "#E4E4E7", "#F4F4F5", "rgba(0,0,0,0.03)"
-            ov_bg, card_txt = "rgba(255,255,255,0.7)", "#09090B"
+            ov_bg, card_txt, ihov = "rgba(255,255,255,0.7)", "#09090B", "#F4F4F5"
             
         return f"""
         QMainWindow {{ background-color: {bg}; }}
@@ -527,7 +527,7 @@ class ThemeOps:
             border: none;
         }}
         QComboBox QAbstractItemView::item:hover, QComboBox QListView::item:hover {{ 
-            background-color: {hov}; 
+            background-color: {ihov}; 
             color: {txt}; 
             border: none;
         }}
