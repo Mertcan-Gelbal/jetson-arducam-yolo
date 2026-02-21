@@ -1072,7 +1072,7 @@ class App(QMainWindow):
             scl.addWidget(QLabel("Map a script from your workspace to this camera feed.", styleSheet="color:#888; font-size:11px;"))
             
             f_sub = QFormLayout(); f_sub.setSpacing(12)
-            ws_cb = QComboBox()
+            ws_cb = make_combo()
             conts = DockerManager.list_containers()
             if conts: [ws_cb.addItem(f"{c['name']}", c['id']) for c in conts]
             
