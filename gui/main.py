@@ -1217,7 +1217,13 @@ class App(QMainWindow):
         card = ResizableCard(cn, img, True); card.trigger_delete_modal.connect(self.show_delete_confirmation); card.removed.connect(card.deleteLater); card.set_status_info("Pulling", "#0A84FF")
         card.db = self.db
         self.df.removeWidget(self.abd); self.df.addWidget(card); self.df.addWidget(self.abd)
-        card.w = DockerCreationThread(f"docker run -d --name {cn} --rm {img} sleep infinity")
+        
+        # Enterprise Persistency Layer: Map local host directory to Docker environment
+        ws_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspaces"))
+        ws_dir = os.path.join(ws_base, cn); os.makedirs(ws_dir, exist_ok=True)
+        
+        run_cmd = f"docker run -d --name {cn} --restart unless-stopped -v \"{ws_dir}:/workspace\" -w /workspace {img} sleep infinity"
+        card.w = DockerCreationThread(run_cmd)
         def on_created(o, s):
             if s:
                 card.container_id = o; card.set_status_info("Active","#30D158"); card.start_monitoring()
