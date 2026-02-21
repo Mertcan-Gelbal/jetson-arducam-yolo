@@ -518,7 +518,7 @@ class ThemeOps:
         }}
         QAbstractItemView::item {{ min-height: 32px; padding: 6px 10px; }}
         QAbstractItemView::item:selected {{ background-color: #007AFF; color: white; }}
-        QAbstractItemView::item:hover {{ background-color: rgba(0,122,255,0.18); }}
+        QAbstractItemView::item:hover {{ background-color: {hov}; color: {txt}; }}
         QPushButton#NavTab {{ border: none; border-radius: 6px; text-align: left; padding: 12px 18px; color: {sub}; font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }}
         QPushButton#NavTab:checked {{ background-color: #007AFF; color: white; }}
         QPushButton#NavTab:hover {{ background-color: {hov}; color: {txt}; }}
