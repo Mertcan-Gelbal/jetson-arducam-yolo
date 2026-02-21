@@ -344,15 +344,16 @@ class ResizableCard(QFrame):
         self.is_docker = is_docker; self.container_id = container_id; self.title_text = title; self.checker = None
         self.base_image = sub if is_docker else None # Store image tag for purging
         l = QVBoxLayout(self); l.setContentsMargins(0,0,0,0); l.setSpacing(0)
-        # Header (Refined Alignment & High-Contrast)
-        h = QFrame(); h.setFixedHeight(54); h.setStyleSheet("background: rgba(128,128,128,0.06); border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom: 1.5px solid rgba(128,128,128,0.1);")
-        hl = QHBoxLayout(h); hl.setContentsMargins(18,0,12,0); hl.setSpacing(10); hl.setAlignment(Qt.AlignVCenter)
+        h = QFrame(); h.setObjectName("CardHeader"); h.setFixedHeight(46)
+        h.setStyleSheet("QFrame#CardHeader { background: rgba(128,128,128,0.03); border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom: 1px solid rgba(128,128,128,0.08); }")
+        hl = QHBoxLayout(h); hl.setContentsMargins(14,0,10,0); hl.setSpacing(8); hl.setAlignment(Qt.AlignVCenter)
         
         self.l_title = QLabel(title.upper()); self.l_title.setObjectName("CardTitle"); hl.addWidget(self.l_title)
         
         # High-precision status indicators (Unified for AI/Docker/NVR)
-        self.s_dot = QLabel("●"); self.s_dot.setFixedWidth(10); hl.addWidget(self.s_dot)
-        self.s_txt = QLabel("READY"); self.s_txt.setStyleSheet("color: #888; font-size: 9px; font-weight: 900; letter-spacing: 0.8px; border:none;"); hl.addWidget(self.s_txt)
+        self.s_dot = QLabel("●"); self.s_dot.setFixedWidth(10); self.s_dot.setStyleSheet("background: transparent; border: none;")
+        hl.addWidget(self.s_dot)
+        self.s_txt = QLabel("READY"); self.s_txt.setStyleSheet("color: #888; font-size: 9px; font-weight: 900; letter-spacing: 0.8px; border:none; background: transparent;"); hl.addWidget(self.s_txt)
         
         if not is_docker:
             self.rec_badge = QLabel("REC"); self.rec_badge.setStyleSheet("color: #EF4444; font-size: 8px; font-weight: 900; background: rgba(239, 68, 68, 0.1); padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(239, 68, 68, 0.3);")
@@ -374,7 +375,7 @@ class ResizableCard(QFrame):
         c = QPushButton("×"); c.setFixedSize(28,28); c.setStyleSheet("border: none; color: #666; font-size: 20px; background: transparent;"); c.setCursor(Qt.PointingHandCursor); c.clicked.connect(lambda: self.trigger_delete_modal.emit(self)); hl.addWidget(c)
         l.addWidget(h)
 
-        self.cnt = QWidget(); cl = QVBoxLayout(self.cnt); cl.setContentsMargins(18,18,18,18); cl.setSpacing(12); l.addWidget(self.cnt)
+        self.cnt = QWidget(); cl = QVBoxLayout(self.cnt); cl.setContentsMargins(10,10,10,10); cl.setSpacing(8); l.addWidget(self.cnt)
         if is_docker:
             # Industrial Metadata Grid with Clean Identifier
             icon_box = QHBoxLayout(); icon_box.setSpacing(10)
@@ -403,7 +404,7 @@ class ResizableCard(QFrame):
             bh = QHBoxLayout(); bh.setSpacing(8); bh.setContentsMargins(0,0,0,0)
             def create_badge(txt, col):
                 t = str(txt).replace("📡", "").replace("🌐", "").replace("🤖", "").strip().upper()
-                b = QLabel(t); b.setStyleSheet(f"background: rgba(128,128,128,0.05); color: {col}; font-size: 8px; font-weight: 900; padding: 4px 10px; border-radius: 5px; border: 1.5px solid {col}40; letter-spacing:0.5px;")
+                b = QLabel(t); b.setStyleSheet(f"color: {col}; font-size: 8px; font-weight: 800; padding: 3px 6px; border-radius: 4px; border: 1px solid {col}50; letter-spacing:0.5px; background: transparent;")
                 return b
             
             bh.addWidget(create_badge(mode, "#8B5CF6")) 
@@ -416,7 +417,7 @@ class ResizableCard(QFrame):
             
             bh.addStretch(); bh.addWidget(self.rec_btn); cl.addLayout(bh)
 
-            self.ai_meta = QLabel("OBJECTS: 0"); self.ai_meta.setStyleSheet("color: rgba(255,255,255,0.3); font-size: 8px; font-weight: 900; letter-spacing: 0.5px; margin-top: 4px;")
+            self.ai_meta = QLabel("OBJECTS: 0"); self.ai_meta.setStyleSheet("color: rgba(128,128,128,0.5); font-size: 8px; font-weight: 800; letter-spacing: 0.5px;")
             cl.addWidget(self.ai_meta)
 
             self.view = QLabel("INITIALIZING FEED..."); self.view.setObjectName("PreviewArea"); self.view.setAlignment(Qt.AlignCenter)
@@ -511,7 +512,7 @@ class ThemeOps:
         QFrame#Sidebar {{ background-color: {sb}; border-right: 1.5px solid {brd}; }}
         QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 12px; }}
         QFrame#ModalBox {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 16px; }}
-        QLabel#CardTitle {{ font-weight: 900; font-size: 14px; color: {card_txt}; border: none; background: transparent; letter-spacing: 0.5px; }}
+        QLabel#CardTitle {{ font-weight: 800; font-size: 11px; color: {card_txt}; border: none; background: transparent; letter-spacing: 0.5px; }}
         QLineEdit, QComboBox {{ background-color: {ibg}; border: 1.2px solid {brd}; border-radius: 8px; padding: 6px 14px; color: {txt}; font-size: 13px; font-weight: 500; min-height: 36px; max-height: 36px; }}
         QLineEdit:focus, QComboBox:focus {{ border-color: #007AFF; background-color: rgba(0,122,255,0.05); }}
         QComboBox {{ padding-right: 30px; }}
@@ -550,7 +551,7 @@ class ThemeOps:
         QPushButton#BtnPrimary:hover {{ background-color: #0A84FF; }}
         QPushButton#BtnDanger {{ background-color: rgba(239, 68, 68, 0.1); color: #EF4444; border-radius: 10px; padding: 12px; border: 1px solid rgba(239, 68, 68, 0.2); font-weight: 700; font-size: 13px; }}
         QPushButton#BtnDanger:hover {{ background-color: #EF4444; color: white; }}
-        QPushButton#ShellBtn {{ border: 1.5px solid {brd}; border-radius: 8px; color: {sub}; font-size: 11px; font-weight:bold; background: transparent; }}
+        QPushButton#ShellBtn {{ border: 1px solid {brd}; border-radius: 6px; color: {sub}; font-size: 10px; font-weight:800; background: transparent; }}
         QPushButton#ShellBtn:hover {{ border-color: #007AFF; color: #007AFF; }}
         QScrollBar:vertical {{ background: transparent; width: 6px; }}
         QScrollBar::handle:vertical {{ background: {brd}; border-radius: 3px; }}
@@ -699,7 +700,7 @@ class StatsThread(QThread):
 
 class App(QMainWindow):
     def __init__(self):
-        super().__init__(); self.resize(1200, 800); self.setWindowTitle("LUMINA EDGE"); self.is_dark = True
+        super().__init__(); self.resize(1200, 800); self.setWindowTitle("VISION CORE"); self.is_dark = True
         self.db = DBManager()
         self.active_cids = set(); self.active_srcs = set()
         c = QWidget(); self.setCentralWidget(c); self.main = QHBoxLayout(c); self.main.setContentsMargins(0,0,0,0); self.main.setSpacing(0)
