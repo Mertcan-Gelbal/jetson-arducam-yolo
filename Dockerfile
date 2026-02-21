@@ -8,6 +8,8 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
+# Install system-level GStreamer and media libraries in a single RUN to minimize layers
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     v4l-utils \
     gstreamer1.0-tools \
@@ -21,10 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libsm6 libxext6 libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements and install Python packages.
+# Note: torch/torchvision are pre-installed in the NVIDIA L4T base image;
+# --ignore-installed prevents pip from downgrading them to upstream versions.
+# hadolint ignore=DL3013
 COPY requirements.txt /app/requirements.txt
-# Install requirements while protecting system-installed torch/torchvision/opencv
 RUN pip3 install --no-cache-dir --ignore-installed -r /app/requirements.txt \
-    && pip3 install --upgrade setuptools wheel
+    && pip3 install --no-cache-dir --upgrade setuptools wheel
 
 COPY . /app
 

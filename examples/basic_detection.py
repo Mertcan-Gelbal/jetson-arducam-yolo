@@ -11,6 +11,8 @@ import argparse
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Jetson Arducam AI Detection')
+    parser.add_argument('--source-type', type=str, default='csi', choices=['csi', 'usb'], help='Camera type')
     parser.add_argument('--model', type=str, default='yolo11n.pt', help='Model path (.pt or .engine)')
     parser.add_argument('--camera', type=int, default=0, help='Camera ID')
     parser.add_argument('--width', type=int, default=1280, help='Camera width')

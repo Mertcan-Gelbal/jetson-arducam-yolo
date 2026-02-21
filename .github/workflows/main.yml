@@ -74,10 +74,9 @@ jobs:
       uses: hadolint/hadolint-action@v3.1.0
       with:
         dockerfile: Dockerfile
-        # DL3008: pin apt versions — acceptable for Jetson base images
-        # DL3009: delete apt lists — base image handles this
-        # SC2028: echo escape sequences — cosmetic in entrypoint
-        ignore: DL3008,DL3009,SC2028
+        # DL3059: multiple RUN instructions is acceptable for readability
+        # DL3008/DL3013 are handled inline in the Dockerfile with justification
+        ignore: DL3059
 
   # ─── 4. Docker Compose Validate ────────────────────────────────────────────
   compose-validate:
