@@ -508,25 +508,28 @@ class ThemeOps:
         QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; border: none; width: 28px; border-left: 1px solid {brd}; border-top-right-radius: 8px; border-bottom-right-radius: 8px; }}
         QComboBox::down-arrow {{ image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid {sub}; margin-right: 10px; }}
         
-        QComboBox QAbstractItemView {{ 
+        QComboBox QAbstractItemView, QComboBox QListView {{ 
             background-color: {card}; 
             border: 1px solid {brd}; 
             color: {txt}; 
             outline: 0px;
         }}
-        QComboBox QAbstractItemView::item {{ 
+        QComboBox QAbstractItemView::item, QComboBox QListView::item {{ 
             min-height: 32px; 
             padding: 6px 10px; 
             background-color: {card};
             color: {txt};
+            border: none;
         }}
-        QComboBox QAbstractItemView::item:selected {{ 
+        QComboBox QAbstractItemView::item:selected, QComboBox QListView::item:selected {{ 
             background-color: #007AFF; 
             color: white; 
+            border: none;
         }}
-        QComboBox QAbstractItemView::item:hover {{ 
+        QComboBox QAbstractItemView::item:hover, QComboBox QListView::item:hover {{ 
             background-color: {hov}; 
             color: {txt}; 
+            border: none;
         }}
         QPushButton#NavTab {{ border: none; border-radius: 6px; text-align: left; padding: 12px 18px; color: {sub}; font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }}
         QPushButton#NavTab:checked {{ background-color: #007AFF; color: white; }}
@@ -1017,8 +1020,12 @@ class App(QMainWindow):
         # Helper: creates a themed, cross-platform-safe QComboBox
         # On Ubuntu/GTK, CSS height constraints alone are insufficient —
         # setFixedHeight + view().setMaximumHeight() must be set programmatically.
+        # Also explicitly setting setView(QListView()) forces Qt to bypass
+        # the unstylable native GTK popup rendering on Ubuntu.
         def make_combo():
             c = QComboBox()
+            from PyQt5.QtWidgets import QListView
+            c.setView(QListView())
             c.setFixedHeight(36)
             c.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             c.view().setMaximumHeight(180)  # cap the dropdown popup height
