@@ -502,14 +502,15 @@ class ThemeOps:
         QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 12px; }}
         QFrame#ModalBox {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 16px; }}
         QLabel#CardTitle {{ font-weight: 900; font-size: 14px; color: {card_txt}; border: none; background: transparent; letter-spacing: 0.5px; }}
-        QLineEdit, QComboBox {{ background-color: {ibg}; border: 1.2px solid {brd}; border-radius: 8px; padding: 6px 14px; color: {txt}; font-size: 13px; font-weight: 500; min-height: 36px; max-height: 36px; selection-background-color: #007AFF; }}
+        QLineEdit, QComboBox {{ background-color: {ibg}; border: 1.2px solid {brd}; border-radius: 8px; padding: 6px 14px; color: {txt}; font-size: 13px; font-weight: 500; min-height: 36px; max-height: 36px; }}
         QLineEdit:focus, QComboBox:focus {{ border-color: #007AFF; background-color: rgba(0,122,255,0.05); }}
         QComboBox {{ padding-right: 30px; }}
         QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; border: none; width: 28px; border-left: 1px solid {brd}; border-top-right-radius: 8px; border-bottom-right-radius: 8px; }}
         QComboBox::down-arrow {{ image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid {sub}; margin-right: 10px; }}
-        QComboBox QAbstractItemView {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 8px; color: {txt}; padding: 4px; outline: none; selection-background-color: #007AFF; selection-color: white; }}
-        QComboBox QAbstractItemView::item {{ min-height: 32px; padding: 4px 10px; border-radius: 4px; }}
-        QComboBox QAbstractItemView::item:hover {{ background-color: rgba(0,122,255,0.15); }}
+        QAbstractItemView {{ background-color: {card}; border: 1.2px solid {brd}; color: {txt}; outline: none; selection-background-color: #007AFF; selection-color: white; show-decoration-selected: 1; }}
+        QAbstractItemView::item {{ min-height: 30px; padding: 4px 10px; }}
+        QAbstractItemView::item:selected {{ background-color: #007AFF; color: white; }}
+        QAbstractItemView::item:hover {{ background-color: rgba(0,122,255,0.18); }}
         QPushButton#NavTab {{ border: none; border-radius: 6px; text-align: left; padding: 12px 18px; color: {sub}; font-weight: 600; font-size: 13px; letter-spacing: 0.3px; }}
         QPushButton#NavTab:checked {{ background-color: #007AFF; color: white; }}
         QPushButton#NavTab:hover {{ background-color: {hov}; color: {txt}; }}
@@ -996,29 +997,44 @@ class App(QMainWindow):
         eng_label = QLabel("ENGINE:"); prof_label = QLabel("PROFILE:")
         ai_setup_label = QLabel("AI SETUP:")
 
+        # Helper: creates a themed, cross-platform-safe QComboBox
+        # On Ubuntu/GTK, CSS height constraints alone are insufficient —
+        # setFixedHeight + view().setMaximumHeight() must be set programmatically.
+        def make_combo():
+            c = QComboBox()
+            c.setFixedHeight(36)
+            c.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            c.view().setMaximumHeight(180)  # cap the dropdown popup height
+            return c
+
         # Form Area Widgets
+        # Always initialize ALL widgets first to avoid UnboundLocalError in all_elements.
+        # Cam-only widgets are set to None when is_cam=False.
+        mode_combo = cam_combo = container_combo = script_input = cat_combo = None
+
         if is_cam:
             name_input = QLineEdit(); name_input.setPlaceholderText("Enter a name for this stream (e.g. Garden)")
-            mode_combo = QComboBox()
+            mode_combo = make_combo()
             mode_combo.addItem("PHYSICAL DEVICE", "Physical")
             mode_combo.addItem("NETWORK STREAM", "Stream")
             mode_combo.addItem("AI WORKSPACE ENGINE", "Container")
         else:
             name_input = QLineEdit(); name_input.setPlaceholderText("Enter a name for this workspace (e.g. Dev Lab)")
-            cat_combo = QComboBox(); [cat_combo.addItem(i['name'], i['img']) for i in CatalogManager.get_recommended()[0]]
+            cat_combo = make_combo(); [cat_combo.addItem(i['name'], i['img']) for i in CatalogManager.get_recommended()[0]]
 
-        # Mode-Specific Fields
-        cam_combo = QComboBox(); [cam_combo.addItem(n, i) for n, i in list_cameras()]
+        # Mode-Specific Fields (only used when is_cam=True)
+        cam_combo = make_combo(); [cam_combo.addItem(n, i) for n, i in list_cameras()]
         url_input = QLineEdit(); url_input.setPlaceholderText("rtsp://admin:123@192.168.1.10/stream")
-        container_combo = QComboBox(); containers = DockerManager.list_containers()
+        container_combo = make_combo(); containers = DockerManager.list_containers()
         if containers: [container_combo.addItem(f"{c['name']} ({c['image']})", c['id']) for c in containers]
         else: container_combo.addItem("No active containers", None)
         script_input = QLineEdit(); script_input.setPlaceholderText("/path/to/script.py")
         cin = QLineEdit(); cin.setPlaceholderText("Override with custom image tag (optional)")
 
         # Intelligence Fields
-        engine_combo = QComboBox(); [engine_combo.addItem(e) for e in ["Standard", "YOLOv8", "Face AI", "Pose AI", "CUSTOM WORKSPACE"]]
-        res_combo = QComboBox(); [res_combo.addItem(r) for r in ["Auto", "720p", "1080p", "4K"]]
+        engine_combo = make_combo(); [engine_combo.addItem(e) for e in ["Standard", "YOLOv8", "Face AI", "Pose AI", "CUSTOM WORKSPACE"]]
+        res_combo = make_combo(); [res_combo.addItem(r) for r in ["Auto", "720p", "1080p", "4K"]]
+
 
         # Custom AI Configurator Overlay
         custom_config = {"cid": None, "script": ""}
@@ -1050,11 +1066,11 @@ class App(QMainWindow):
         setup_btn = QPushButton("CONFIGURE SCRIPT..."); setup_btn.setObjectName("ShellBtn"); setup_btn.setFixedSize(140, 32); setup_btn.hide()
         setup_btn.clicked.connect(open_custom_setup)
 
-        # Safeguard all elements from deletion
-        all_elements = [name_input, mode_combo, cam_combo, url_input, container_combo, script_input, cin, 
-                        engine_combo, res_combo, setup_btn, name_label, mode_label, cat_label, cam_label, 
-                        url_label, ws_label, exe_label, src_label, eng_label, prof_label, ai_setup_label]
-        if not is_cam: all_elements.append(cat_combo)
+        # Safeguard all elements from deletion (None values are filtered by the 'if e' guard below)
+        all_elements = [name_input, mode_combo, cam_combo, url_input, container_combo, script_input, cin,
+                        engine_combo, res_combo, setup_btn, name_label, mode_label, cat_label, cam_label,
+                        url_label, ws_label, exe_label, src_label, eng_label, prof_label, ai_setup_label,
+                        cat_combo]
         
         for e in all_elements: 
             if e: e.setParent(box); e.hide()
