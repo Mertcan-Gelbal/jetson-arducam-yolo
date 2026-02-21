@@ -15,32 +15,48 @@ from queue import Queue
 class CameraThread(threading.Thread):
     """Thread to capture frames from a camera"""
     
-    def __init__(self, camera_id, queue):
+    def __init__(self, camera_id, queue, source_type='csi', width=1280, height=720):
         threading.Thread.__init__(self)
         self.camera_id = camera_id
         self.queue = queue
-        self.cap = cv2.VideoCapture(camera_id)
         self.running = False
+        
+        if source_type == 'usb':
+            self.cap = cv2.VideoCapture(camera_id)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        else:
+            # CSI Camera: GStreamer Pipeline (Hardware Accelerated)
+            gst_pipeline = (
+                f"nvarguscamerasrc sensor-id={camera_id} ! "
+                f"video/x-raw(memory:NVMM), width={width}, height={height}, framerate=30/1 ! "
+                f"nvvidconv flip-method=0 ! "
+                f"video/x-raw, width={width}, height={height}, format=BGRx ! "
+                f"videoconvert ! "
+                f"video/x-raw, format=BGR ! appsink drop=True"
+            )
+            self.cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
         
     def run(self):
         self.running = True
         while self.running:
             ret, frame = self.cap.read()
             if ret:
-                # Keep only latest frame
+                # Keep only latest frame (clear previous if not processed)
                 if not self.queue.empty():
                     try:
                         self.queue.get_nowait()
                     except:
                         pass
-                self.queue.put((self.camera_id, frame))
+                self.queue.put(frame)
     
     def stop(self):
         self.running = False
-        self.cap.release()
+        if self.cap:
+            self.cap.release()
 
 
-def process_cameras(camera_ids, model_path, conf_thresh=0.25, display=False):
+def process_cameras(camera_ids, model_path, source_type='csi', conf_thresh=0.25, display=False):
     """Process multiple cameras with YOLOv8"""
     
     # Load model
@@ -52,9 +68,9 @@ def process_cameras(camera_ids, model_path, conf_thresh=0.25, display=False):
     threads = {}
     
     for cam_id in camera_ids:
-        print(f"Initializing camera {cam_id}")
-        queues[cam_id] = Queue(maxsize=2)
-        threads[cam_id] = CameraThread(cam_id, queues[cam_id])
+        print(f"Initializing camera {cam_id} ({source_type})")
+        queues[cam_id] = Queue(maxsize=1)
+        threads[cam_id] = CameraThread(cam_id, queues[cam_id], source_type=source_type)
         threads[cam_id].start()
     
     frame_counts = {cam_id: 0 for cam_id in camera_ids}
@@ -63,134 +79,103 @@ def process_cameras(camera_ids, model_path, conf_thresh=0.25, display=False):
         print("Processing cameras... Press 'q' to quit")
         
         while True:
-            frames = {}
+            # Run inference on each camera sequentially (Jetson shared GPU memory)
+            # Alternatively, batch the frames together for better GPU utilization
+            batch_frames = []
+            valid_cam_ids = []
             
-            # Get latest frame from each camera
             for cam_id in camera_ids:
                 if not queues[cam_id].empty():
-                    _, frame = queues[cam_id].get()
-                    frames[cam_id] = frame
+                    frame = queues[cam_id].get()
+                    batch_frames.append(frame)
+                    valid_cam_ids.append(cam_id)
             
-            if not frames:
+            if not batch_frames:
                 continue
             
-            # Run inference on all frames
-            results = {}
-            for cam_id, frame in frames.items():
-                result = model(frame, conf=conf_thresh, verbose=False)
-                results[cam_id] = result[0]
+            # Run inference on the batch
+            results = model(batch_frames, conf=conf_thresh, verbose=False)
+            
+            # Map results back to cameras
+            results_dict = {}
+            for i, cam_id in enumerate(valid_cam_ids):
+                results_dict[cam_id] = results[i]
                 frame_counts[cam_id] += 1
             
             # Display results
-            if display and results:
+            if display:
                 display_frames = []
                 
-                for cam_id in sorted(results.keys()):
-                    annotated = results[cam_id].plot()
+                for cam_id in sorted(results_dict.keys()):
+                    annotated = results_dict[cam_id].plot()
                     
-                    # Add camera label
-                    cv2.putText(
-                        annotated,
-                        f"Camera {cam_id} - Frame {frame_counts[cam_id]}",
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 255, 0),
-                        2
-                    )
+                    # Add camera label and stats
+                    label = f"Cam {cam_id} - {frame_counts[cam_id]}"
+                    cv2.putText(annotated, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
-                    # Add detection count
-                    det_count = len(results[cam_id].boxes)
-                    cv2.putText(
-                        annotated,
-                        f"Detections: {det_count}",
-                        (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 255, 0),
-                        2
-                    )
+                    det_count = len(results_dict[cam_id].boxes)
+                    cv2.putText(annotated, f"Detections: {det_count}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
                     display_frames.append(annotated)
                 
-                # Create grid layout
-                if len(display_frames) == 2:
-                    combined = np.hstack(display_frames)
-                elif len(display_frames) == 3:
-                    # 2 on top, 1 on bottom
-                    top = np.hstack(display_frames[:2])
-                    bottom = display_frames[2]
-                    # Resize bottom to match width
-                    bottom = cv2.resize(bottom, (top.shape[1], bottom.shape[0]))
-                    combined = np.vstack([top, bottom])
-                elif len(display_frames) == 4:
-                    # 2x2 grid
-                    top = np.hstack(display_frames[:2])
-                    bottom = np.hstack(display_frames[2:])
-                    combined = np.vstack([top, bottom])
-                else:
-                    combined = display_frames[0]
-                
-                # Resize if too large
-                max_width = 1920
-                if combined.shape[1] > max_width:
-                    scale = max_width / combined.shape[1]
-                    new_width = int(combined.shape[1] * scale)
-                    new_height = int(combined.shape[0] * scale)
-                    combined = cv2.resize(combined, (new_width, new_height))
-                
-                cv2.imshow('Multi-Camera Detection', combined)
-                
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                if display_frames:
+                    # Create grid layout
+                    if len(display_frames) == 2:
+                        combined = np.hstack(display_frames)
+                    elif len(display_frames) == 3:
+                        top = np.hstack(display_frames[:2])
+                        bottom = cv2.resize(display_frames[2], (top.shape[1], display_frames[2].shape[0]))
+                        combined = np.vstack([top, bottom])
+                    elif len(display_frames) == 4:
+                        top = np.hstack(display_frames[:2])
+                        bottom = np.hstack(display_frames[2:])
+                        combined = np.vstack([top, bottom])
+                    else:
+                        combined = display_frames[0]
+                    
+                    # Resize if too large
+                    max_width = 1920
+                    if combined.shape[1] > max_width:
+                        scale = max_width / combined.shape[1]
+                        combined = cv2.resize(combined, (int(combined.shape[1] * scale), int(combined.shape[0] * scale)))
+                    
+                    cv2.imshow('Multi-Camera Detection', combined)
+                    
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
             
-            # Print stats every 30 frames
+            # Stats logging
             if any(count % 30 == 0 for count in frame_counts.values()):
-                stats = " | ".join([
-                    f"Cam{cam_id}: {frame_counts[cam_id]} frames"
-                    for cam_id in camera_ids
-                ])
+                stats = " | ".join([f"Cam{cid}: {cnt} frames" for cid, cnt in frame_counts.items()])
                 print(stats)
     
     except KeyboardInterrupt:
         print("\nStopping...")
     
     finally:
-        # Stop all threads
         for thread in threads.values():
             thread.stop()
         for thread in threads.values():
             thread.join()
-        
         cv2.destroyAllWindows()
-        
         print("\nFinal statistics:")
         for cam_id in camera_ids:
             print(f"  Camera {cam_id}: {frame_counts[cam_id]} frames processed")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Multi-Camera YOLOv8 Detection')
-    parser.add_argument(
-        '--cameras',
-        type=int,
-        nargs='+',
-        default=[0, 1],
-        help='Camera device IDs (e.g., --cameras 0 1 2 3)'
-    )
-    parser.add_argument('--model', type=str, default='yolov8n.pt', help='Model path')
+    parser = argparse.ArgumentParser(description='Multi-Camera AI Detection')
+    parser.add_argument('--cameras', type=int, nargs='+', default=[0, 1], help='Camera device IDs')
+    parser.add_argument('--source-type', type=str, default='csi', choices=['csi', 'usb'], help='Camera type')
+    parser.add_argument('--model', type=str, default='yolo11n.engine', help='Model path (.pt or .engine)')
     parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold')
-    parser.add_argument('--display', action='store_true', help='Display results')
+    parser.add_argument('--display', action='store_true', help='Display results (Disable for headless)')
     args = parser.parse_args()
-    
-    print(f"Multi-Camera Detection")
-    print(f"Cameras: {args.cameras}")
-    print(f"Model: {args.model}")
-    print(f"Confidence: {args.conf}")
     
     process_cameras(
         camera_ids=args.cameras,
         model_path=args.model,
+        source_type=args.source_type,
         conf_thresh=args.conf,
         display=args.display
     )

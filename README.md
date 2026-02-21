@@ -1,80 +1,44 @@
-# Jetson Arducam AI Kit
+# VisionDock: Jetson AI Ecosystem
 
-A flexible, production-ready environment for running modern Computer Vision models (YOLOv8, YOLOv11, RT-DETR, EfficientNet, etc.) with Arducam hardware on NVIDIA Jetson devices.
+VisionDock is a professional, production-ready suite designed to bridge modern Computer Vision models with NVIDIA Jetson hardware. It provides a seamless, automated environment for deploying high-performance AI applications with specialized support for Arducam CSI and USB imaging systems.
 
-## Features
+## Key Capabilities
 
-*   **Universal Model Support:** Run any model supported by Ultralytics and PyTorch.
-*   **Dynamic Platform:** Automatically adapts base images for JetPack 5.x or 6.x systems.
-*   **Dual Camera Support:** Full support for both **CSI/MIPI** (Arducam IMX series) and **USB Webcams**.
-*   **Hardware Acceleration:** Optimized GStreamer pipelines for CSI cameras and V4L2 for USB devices.
-*   **TensorRT Ready:** Native tools to convert models to TensorRT for maximum performance.
+*   **Automated Environment:** Intelligent detection of JetPack 5.x/6.x to configure the optimal AI stack.
+*   **Hardware-Accelerated Imaging:** Native integration with DeepStream-compatible GStreamer pipelines for zero-latency CSI and USB video feeds.
+*   **Universal Model Support:** Out-of-the-box compatibility with YOLOv8, YOLOv11, and RT-DETR via Ultralytics and PyTorch.
+*   **Production Architecture:** Containerized deployment using Docker and Docker Compose with full hardware passthrough (CUDA, TensorRT, NVENC).
 
-## Project Structure
+## Quick Start (Automated Installer)
 
-```text
-jetson-arducam-ai/
-├── install.sh                  # Modular master installer
-├── Dockerfile                  # Self-configuring AI environment
-├── scripts/
-│   ├── setup_cameras.sh        # Camera driver setup wizard
-│   ├── build_docker.sh         # Dynamic image builder
-│   ├── run_docker.sh           # Hardware-passthrough launcher
-│   ├── test_installation.sh    # System health diagnostics
-│   └── download_models.sh      # Pre-download popular weights
-├── examples/                   # Production-ready Python examples
-└── docs/                       # Comprehensive guides
-```
-
-## Installation
-
-### Recommended Automated Setup
-The modular installer orchestrates the entire workflow. You can run all steps at once or trigger specific modules.
+The core of the VisionDock deployment is the `install.sh` script. This modular installer orchestrates the entire system setup, ensuring all hardware drivers and software dependencies are perfectly aligned.
 
 ```bash
-# Full sequence (Recommended for first timers)
+# Clone the repository
+git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo
+cd jetson-arducam-yolo
+
+# Run the master installer
+chmod +x install.sh
 ./install.sh --all
-
-# Modular options
-./install.sh --drivers   # Only camera setup
-./install.sh --build     # Rebuild AI environment
-./install.sh --run       # Start the container
 ```
 
-## Usage
+### What `install.sh` Provides:
+1.  **System Diagnostics:** Verifies JetPack version, CUDA availability, and hardware health.
+2.  **Driver Management:** Automatically installs and configures Arducam CSI camera drivers (IMX series).
+3.  **Environment Orchestration:** Builds a custom, lightweight Docker environment tailored to your specific Jetson model.
+4.  **Hardware Passthrough:** Configures the system to allow high-performance access to GPU and ISP resources from within containers.
 
-### Basic Inference
-Once the container is running, use our optimized wrappers inside the shell:
+## Project Architecture
 
-```bash
-# Enter container
-sudo docker exec -it jetson-arducam-ctr bash
-
-# CSI Camera (Default Arducam Setup)
-python3 examples/basic_detection.py --model yolo11n.pt --source-type csi
-
-# USB Camera
-python3 examples/basic_detection.py --model yolo11n.pt --source-type usb --camera 0
-```
-
-### Expected Performance (Reference)
-Performance measured on Orin Nano (8GB) with TensorRT optimization:
-
-| Model | Framework | Resolution | FPS (Avg) |
-| :--- | :--- | :--- | :--- |
-| YOLO11n | TensorRT | 640x640 | 45-60 |
-| YOLOv8n | TensorRT | 640x640 | 55-70 |
-| YOLO11s | TensorRT | 640x640 | 25-35 |
-| YOLOv8m | PyTorch | 640x640 | 8-12 |
-
-## Performance Tuning
-To unlock maximum power on your Jetson device:
-
-1.  **System Clocks:** `sudo nvpmodel -m 0 && sudo jetson_clocks`
-2.  **Optimization:** Use `./examples/tensorrt_export.py` to convert PyTorch models to TensorRT.
+*   **`install.sh`**: The primary entry point for full-system initialization.
+*   **`Dockerfile`**: Defines the optimized, hardware-accelerated AI environment.
+*   **`gui/`**: Contains the **VisionDock Studio**—a professional desktop interface for managingカメラ streams and AI workspaces.
+*   **`scripts/`**: Modular utilities for camera setup, image building, and health checks.
+*   **`examples/`**: Production-ready Python templates for inference and spatial analytics.
 
 ## Support
-Detailed documentation is available in the `docs/` folder. Please open a GitHub issue for technical bugs or hardware compatibility questions.
+For technical support or commercial inquiries, please refer to the internal documentation in the `docs/` folder or open a GitHub issue. Developed for professional AI engineers and vision researchers.
 
-## License
-MIT License.
+---
+**License:** MIT License.

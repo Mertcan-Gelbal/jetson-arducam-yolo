@@ -8,64 +8,85 @@ Supports: YOLOv8, YOLOv9, YOLOv11, RT-DETR, etc.
 import cv2
 from ultralytics import YOLO
 import argparse
+import time
+import logging
 
+# Configure Industrial Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("arducam_ai.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("JetsonAI")
 
-def main():
-    parser = argparse.ArgumentParser(description='YOLOv8 Basic Detection')
-    parser.add_argument('--source-type', type=str, default='csi', choices=['csi', 'usb'], help='Camera type: csi or usb')
-    parser.add_argument('--width', type=int, default=1280, help='Camera width')
-    parser.add_argument('--height', type=int, default=720, help='Camera height')
-    args = parser.parse_args()
-
-    # Load YOLO Model
-    print(f"Loading model: {args.model}")
-    model = YOLO(args.model)
-    
-    # Initialize Camera
-    print(f"Opening {args.source_type.upper()} camera {args.camera}...")
-    
-    if args.source_type == 'usb':
-        # USB Camera: Standard V4L2
-        cap = cv2.VideoCapture(args.camera)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+def get_camera(source_type, camera_id, width, height):
+    """Helper to initialize and return a cv2.VideoCapture object"""
+    if source_type == 'usb':
+        cap = cv2.VideoCapture(camera_id)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     else:
-        # CSI Camera: GStreamer Pipeline (Hardware Accelerated)
         gst_pipeline = (
-            f"nvarguscamerasrc sensor-id={args.camera} ! "
-            f"video/x-raw(memory:NVMM), width={args.width}, height={args.height}, framerate=30/1 ! "
+            f"nvarguscamerasrc sensor-id={camera_id} ! "
+            f"video/x-raw(memory:NVMM), width={width}, height={height}, framerate=30/1 ! "
             f"nvvidconv flip-method=0 ! "
-            f"video/x-raw, width={args.width}, height={args.height}, format=BGRx ! "
+            f"video/x-raw, width={width}, height={height}, format=BGRx ! "
             f"videoconvert ! "
             f"video/x-raw, format=BGR ! appsink"
         )
-        print(f"Pipeline: {gst_pipeline}")
+        logger.debug(f"GStreamer Pipeline: {gst_pipeline}")
         cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+    return cap
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Jetson Arducam AI Detection')
+    parser.add_argument('--source-type', type=str, default='csi', choices=['csi', 'usb'], help='Camera type')
+    parser.add_argument('--model', type=str, default='yolo11n.pt', help='Model path (.pt or .engine)')
+    parser.add_argument('--camera', type=int, default=0, help='Camera ID')
+    parser.add_argument('--width', type=int, default=1280, help='Camera width')
+    parser.add_argument('--height', type=int, default=720, help='Camera height')
+    parser.add_argument('--conf', type=float, default=0.25, help='Confidence threshold')
+    parser.add_argument('--iou', type=float, default=0.45, help='IOU threshold')
+    parser.add_argument('--imgsz', type=int, default=640, help='Inference image size')
+    parser.add_argument('--display', action='store_true', help='Show display window')
+    args = parser.parse_args()
+
+    # Load YOLO Model
+    logger.info(f"Loading model: {args.model}")
+    model = YOLO(args.model)
+    
+    logger.info(f"Opening {args.source_type.upper()} camera {args.camera}...")
+    cap = get_camera(args.source_type, args.camera, args.width, args.height)
 
     if not cap.isOpened():
-        print(f"Error: Could not open {args.source_type} camera {args.camera}")
+        logger.error(f"Could not open {args.source_type} camera {args.camera} at startup.")
         if args.source_type == 'csi':
-            print("Tip: Check ribbon cable? Try running scripts/setup_cameras.sh")
-        else:
-            print("Tip: Check USB connection? Try lsusage")
+            logger.info("Tip: Check ribbon cable? Try running scripts/setup_cameras.sh")
         return
     
-    # Get camera properties
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    print(f"Camera resolution: {width}x{height} @ {fps}fps")
+    logger.info(f"Camera resolution established: {width}x{height} @ {fps}fps")
     
     frame_count = 0
-    
-    print("Starting detection... Press 'q' to quit")
+    logger.info("Starting detection loop. Press 'q' to quit (if display is open).")
     
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
-                print("Error: Failed to capture frame")
-                break
+                logger.warning("Camera hardware connection lost! Attempting to auto-heal in 3 seconds...")
+                cap.release()
+                time.sleep(3)
+                cap = get_camera(args.source_type, args.camera, args.width, args.height)
+                if cap.isOpened():
+                    logger.info("Camera successfully reconnected!")
+                continue
             
             # Run inference
             results = model(
@@ -83,10 +104,9 @@ def main():
             frame_count += 1
             if frame_count % 30 == 0:
                 detections = len(results[0].boxes)
-                print(f"Frame {frame_count}: {detections} objects detected")
+                logger.info(f"Frame {frame_count} processed: {detections} objects detected")
             
             if args.display:
-                # Add frame counter
                 cv2.putText(
                     annotated_frame,
                     f"Frame: {frame_count}",
@@ -96,19 +116,19 @@ def main():
                     (0, 255, 0),
                     2
                 )
-                
-                cv2.imshow('YOLOv8 Detection', annotated_frame)
-                
+                cv2.imshow('Jetson Advanced Inference', annotated_frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.info("Quit signal received from display.")
                     break
     
     except KeyboardInterrupt:
-        print("\nStopping detection...")
+        logger.info("Stopping detection via KeyboardInterrupt (Ctrl+C)...")
     
     finally:
-        cap.release()
+        if 'cap' in locals() and cap is not None:
+            cap.release()
         cv2.destroyAllWindows()
-        print(f"Total frames processed: {frame_count}")
+        logger.info(f"Shutdown complete. Total operational frames: {frame_count}")
 
 
 if __name__ == '__main__':

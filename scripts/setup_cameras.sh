@@ -369,7 +369,9 @@ setup_csi_camera() {
         if echo "$INSTALL_OUTPUT" | grep -q "reboot"; then
             echo ""
             log_success "Driver installation completed!"
-            echo -e "${YELLOW}A system reboot is required.${NC}"
+            echo -e "${YELLOW}Restarting nvargus-daemon...${NC}"
+            sudo systemctl restart nvargus-daemon || true
+            echo -e "${YELLOW}A system reboot is required for external modules.${NC}"
             read -p "Reboot now? (y/N): " REBOOT
             if [[ $REBOOT =~ ^[Yy]$ ]]; then
                 sudo reboot
@@ -378,6 +380,7 @@ setup_csi_camera() {
             echo "$INSTALL_OUTPUT"
             if [ $? -eq 0 ]; then
                 log_success "Driver installation completed!"
+                sudo systemctl restart nvargus-daemon || true
             else
                 log_error "Installation encountered an issue. Check output above."
             fi

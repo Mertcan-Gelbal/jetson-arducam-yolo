@@ -22,6 +22,11 @@ if sudo docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     exit 0
 fi
 
+if [ -n "$DISPLAY" ]; then
+    xhost +local:docker > /dev/null 2>&1 || true
+    xhost +local:root > /dev/null 2>&1 || true
+fi
+
 echo "Starting new container: $CONTAINER_NAME"
 
 # Build device arguments for video devices (cameras)
@@ -42,6 +47,7 @@ sudo docker run -d \
     --privileged \
     -e DISPLAY=$DISPLAY \
     -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+    -v /tmp/argus_socket:/tmp/argus_socket \
     $VIDEO_DEVICES \
     -v $(pwd):/workspace \
     -w /workspace \

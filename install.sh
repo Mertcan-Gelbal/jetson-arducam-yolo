@@ -28,7 +28,8 @@ show_help() {
     echo "  --drivers    Run only Camera Setup Wizard"
     echo "  --verify     Run only system diagnostics"
     echo "  --build      Build/Rebuild Docker environment"
-    echo "  --run        Launch the container"
+    echo "  --run        Launch the container (docker run)"
+    echo "  --compose    Launch via Docker Compose (recommended for production)"
     echo "  --help       Show this help message"
     echo ""
 }
@@ -63,8 +64,15 @@ case "$1" in
         ./scripts/build_docker.sh
         ;;
     --run)
-        log_info "Launching Container..."
+        log_info "Launching Container (docker run)..."
         ./scripts/run_docker.sh
+        ;;
+    --compose)
+        log_info "Launching via Docker Compose..."
+        docker compose up -d
+        echo ""
+        log_success "Container started. Enter with:"
+        echo "  docker compose exec jetson-ai bash"
         ;;
     --help)
         show_help
@@ -89,7 +97,7 @@ case "$1" in
         # 4. Success Output & Final Checklist
         echo ""
         echo -e "${GREEN}${BOLD}======================================================${NC}"
-        echo -e "${GREEN}${BOLD}   Installation Successfully Completed! 🚀          ${NC}"
+        echo -e "${GREEN}${BOLD}   Installation Successfully Completed!             ${NC}"
         echo -e "${GREEN}${BOLD}======================================================${NC}"
         echo ""
         echo -e "${BOLD}Final Technical Checklist:${NC}"
@@ -99,9 +107,11 @@ case "$1" in
         echo -e " 4. ${CYAN}Diagnostic Tool:${NC} If anything fails, run './scripts/test_installation.sh'"
         echo ""
         echo -e "${BOLD}Quick Run Commands:${NC}"
-        echo -e "  - Start Container:   ${YELLOW}./scripts/run_docker.sh${NC}"
-        echo -e "  - Enter Shell:       ${YELLOW}sudo docker exec -it jetson-arducam-ctr bash${NC}"
-        echo -e "  - Run AI Demo:       ${YELLOW}python3 examples/basic_detection.py --source-type csi${NC}"
+        echo -e "  - Start (Compose):    ${YELLOW}docker compose up -d${NC}  [Recommended]"
+        echo -e "  - Start (Script):     ${YELLOW}./scripts/run_docker.sh${NC}"
+        echo -e "  - Enter Shell:        ${YELLOW}docker compose exec jetson-ai bash${NC}"
+        echo -e "  - CSI Camera Demo:    ${YELLOW}python3 examples/basic_detection.py --source-type csi --display${NC}"
+        echo -e "  - TensorRT Export:    ${YELLOW}python3 examples/tensorrt_export.py --model yolov8n.pt --export${NC}"
         echo ""
         echo "Enjoy your Jetson Arducam AI Kit!"
         ;;

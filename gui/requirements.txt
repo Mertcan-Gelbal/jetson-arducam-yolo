@@ -1,0 +1,7 @@
+# GUI Runtime Dependencies
+# Install with: python3 -m pip install -r gui/requirements.txt
+
+PyQt5>=5.15.0
+psutil>=5.9.0
+opencv-python-headless>=4.8.0
+numpy>=1.22,<1.24

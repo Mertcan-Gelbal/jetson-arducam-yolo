@@ -2,12 +2,26 @@
 """
 Hardware-Accelerated GStreamer Pipeline for Jetson
 Uses nvarguscamerasrc and hardware video decoding
+Supports: JetPack 4.x (r32), 5.x (r35), 6.x (r36)
 """
 
+import os
+import re
 import cv2
 import numpy as np
 from ultralytics import YOLO
 import argparse
+
+
+def get_l4t_version():
+    """Read L4T major version from /etc/nv_tegra_release"""
+    try:
+        with open("/etc/nv_tegra_release", "r") as f:
+            line = f.readline()
+        match = re.search(r"R(\d+)", line)
+        return int(match.group(1)) if match else 36
+    except Exception:
+        return 36  # Default: assume modern JetPack
 
 
 def get_gst_compatibility():
