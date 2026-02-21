@@ -85,3 +85,10 @@ temp/
 # YOLOv8 specific
 ultralytics_cache/
 wandb/
+
+# GUI Runtime / Application Data (do not commit)
+gui/*.db
+gui/*.mp4
+gui/*.avi
+gui/*.json
+gui/recordings/
