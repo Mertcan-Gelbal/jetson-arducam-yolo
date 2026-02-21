@@ -1,9 +1,24 @@
-import sys, os, psutil, subprocess, cv2, time, platform, numpy as np, glob, random, string, threading, json, sqlite3
+import sys, os, psutil, subprocess, cv2, time, platform, numpy as np, glob, random, string, threading, json, sqlite3, logging
 from datetime import datetime
+
+# Logging Setup
+log_path = os.path.join(os.path.expanduser("~"), "visiondock_debug.log")
+logging.basicConfig(filename=log_path, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 # Silence console noise after basic imports
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.qpa.fonts=false"
+
+
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QFrame,
@@ -17,13 +32,12 @@ from PyQt5.QtCore import (
     QPropertyAnimation, QEasingCurve, pyqtProperty, QEvent, QMutex
 )
 
-# Enable High DPI Scaling for 4K / Retina Displays
-QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 from PyQt5.QtGui import (
     QColor, QFont, QIcon, QImage, QPixmap, QPainter, QPen, QBrush, 
     QCursor, QShowEvent, QResizeEvent, QMouseEvent, QTextCursor
 )
+import PyQt5.sip # Explicitly for PyInstaller
+
 
 # =============================================================================
 #  PERSISTENCE MANAGER (SQLITE)
@@ -31,7 +45,11 @@ from PyQt5.QtGui import (
 
 class DBManager:
     def __init__(self):
-        self.db_path = os.path.join(os.path.dirname(__file__), "studio.db")
+        # Use a persistent user directory for the database
+        home = os.path.expanduser("~")
+        data_dir = os.path.join(home, ".visiondock")
+        os.makedirs(data_dir, exist_ok=True)
+        self.db_path = os.path.join(data_dir, "studio.db")
         self.init_db()
 
     def init_db(self):
@@ -722,8 +740,21 @@ class App(QMainWindow):
 
     def init_ui(self):
         sb = QFrame(); sb.setObjectName("Sidebar"); sb.setFixedWidth(240)
-        sl = QVBoxLayout(sb); sl.setContentsMargins(20,50,20,20); sl.setSpacing(8)
-        logo = QLabel("Jetson Studio"); logo.setStyleSheet("font-size: 18px; font-weight: 800; margin-bottom: 30px; border:none;"); sl.addWidget(logo)
+        sl = QVBoxLayout(sb); sl.setContentsMargins(20,40,20,20); sl.setSpacing(8)
+        
+        # Professional Logo Branding
+        l_box = QHBoxLayout(); l_box.setContentsMargins(0,0,0,25)
+        logo_img = QLabel(); logo_img.setFixedSize(32, 32)
+        pix = QPixmap(resource_path("visiondock.svg"))
+        if not pix.isNull():
+            logo_img.setPixmap(pix.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        l_box.addWidget(logo_img)
+        
+        logo_txt = QLabel("VisionDock")
+        logo_txt.setStyleSheet("font-size: 18px; font-weight: 800; border:none;")
+        l_box.addWidget(logo_txt); l_box.addStretch()
+        sl.addLayout(l_box)
+        
         self.eco_mode = False
         self.tabs = QStackedWidget(); self.navs = []
         for i, t in enumerate(["Cameras", "Workspaces", "Library", "Settings"]):
@@ -1263,4 +1294,12 @@ class FlowLayout(QLayout):
         return y + lh - r.y()
 
 if __name__ == "__main__":
+    # Enable High DPI Scaling
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
     app = QApplication(sys.argv); w = App(); w.show(); sys.exit(app.exec_())
+
+
+
+

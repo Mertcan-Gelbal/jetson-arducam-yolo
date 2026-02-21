@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" role="img" aria-label="VisionDock Icon">
+  <defs>
+    <style>
+      .bg { fill:#0B1220; }
+      .ring { stroke:#1F2937; }
+      .blade { fill:#111827; stroke:#334155; }
+      .core { fill:#F9FAFB; }
+      .ai { fill:#76B900; }
+    </style>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <!-- App icon base removed for transparency -->
+  <g filter="url(#shadow)">
+    <!-- Background rectangle removed -->
+  </g>
+
+  <!-- Minimal aperture / camera mark (no green frame, no border accents) -->
+  <g transform="translate(256 256)">
+    <!-- Subtle outer ring -->
+    <circle r="132" fill="none" class="ring" stroke-width="10" opacity="0.7"/>
+    <circle r="112" fill="none" class="ring" stroke-width="6" opacity="0.55"/>
+
+    <!-- 6 aperture blades -->
+    <!-- Blade shape designed to read well at small sizes -->
+    <g>
+      <path class="blade" stroke-width="6" stroke-linejoin="round"
+            d="M0,-92
+               C28,-92 52,-74 60,-50
+               C44,-42 28,-28 22,-10
+               C6,-16 -10,-22 -28,-22
+               C-22,-52 -6,-82 0,-92 Z"/>
+      <g transform="rotate(60)"><path class="blade" stroke-width="6" stroke-linejoin="round"
+            d="M0,-92
+               C28,-92 52,-74 60,-50
+               C44,-42 28,-28 22,-10
+               C6,-16 -10,-22 -28,-22
+               C-22,-52 -6,-82 0,-92 Z"/></g>
+      <g transform="rotate(120)"><path class="blade" stroke-width="6" stroke-linejoin="round"
+            d="M0,-92
+               C28,-92 52,-74 60,-50
+               C44,-42 28,-28 22,-10
+               C6,-16 -10,-22 -28,-22
+               C-22,-52 -6,-82 0,-92 Z"/></g>
+      <g transform="rotate(180)"><path class="blade" stroke-width="6" stroke-linejoin="round"
+            d="M0,-92
+               C28,-92 52,-74 60,-50
+               C44,-42 28,-28 22,-10
+               C6,-16 -10,-22 -28,-22
+               C-22,-52 -6,-82 0,-92 Z"/></g>
+      <g transform="rotate(240)"><path class="blade" stroke-width="6" stroke-linejoin="round"
+            d="M0,-92
+               C28,-92 52,-74 60,-50
+               C44,-42 28,-28 22,-10
+               C6,-16 -10,-22 -28,-22
+               C-22,-52 -6,-82 0,-92 Z"/></g>
+      <g transform="rotate(300)"><path class="blade" stroke-width="6" stroke-linejoin="round"
+            d="M0,-92
+               C28,-92 52,-74 60,-50
+               C44,-42 28,-28 22,-10
+               C6,-16 -10,-22 -28,-22
+               C-22,-52 -6,-82 0,-92 Z"/></g>
+    </g>
+
+    <!-- Inner core -->
+    <circle r="34" class="core" opacity="0.92"/>
+    <circle r="18" fill="#0B1220" opacity="0.85"/>
+
+    <!-- AI accent (single green dot; remove if you want zero green) -->
+    <circle cx="22" cy="-22" r="7.5" class="ai"/>
+  </g>
+</svg>

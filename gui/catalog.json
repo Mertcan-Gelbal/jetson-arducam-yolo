@@ -1,0 +1,46 @@
+{
+    "jetson": [
+        {
+            "name": "L4T PyTorch",
+            "img": "nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3",
+            "desc": "PyTorch 2.0 (Jetson)"
+        },
+        {
+            "name": "L4T ML",
+            "img": "nvcr.io/nvidia/l4t-ml:r35.2.1-py3",
+            "desc": "All-in-One ML"
+        },
+        {
+            "name": "DeepStream",
+            "img": "nvcr.io/nvidia/deepstream-l4t:6.2-base",
+            "desc": "Video Analytics"
+        },
+        {
+            "name": "Jetson Inference",
+            "img": "dustynv/jetson-inference:r35.2.1",
+            "desc": "Object Detection & Classification"
+        }
+    ],
+    "desktop": [
+        {
+            "name": "Python 3.9 (Slim)",
+            "img": "python:3.9-slim",
+            "desc": "Official Python 3.9"
+        },
+        {
+            "name": "Ubuntu 22.04",
+            "img": "ubuntu:22.04",
+            "desc": "Standard Linux Base"
+        },
+        {
+            "name": "Nginx Web Server",
+            "img": "nginx:latest",
+            "desc": "High performance static server"
+        },
+        {
+            "name": "Redis Stack",
+            "img": "redis/redis-stack:latest",
+            "desc": "Redis with extra modules"
+        }
+    ]
+}
