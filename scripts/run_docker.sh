@@ -22,6 +22,11 @@ if sudo docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     exit 0
 fi
 
+if [ -n "$DISPLAY" ]; then
+    xhost +local:docker > /dev/null 2>&1 || true
+    xhost +local:root > /dev/null 2>&1 || true
+fi
+
 echo "Starting new container: $CONTAINER_NAME"
 
 # Build device arguments for video devices (cameras)

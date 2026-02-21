@@ -4,6 +4,7 @@
 
 # Set environment
 export DISPLAY=${DISPLAY:-:0}
+export QT_QPA_PLATFORM=xcb
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors
