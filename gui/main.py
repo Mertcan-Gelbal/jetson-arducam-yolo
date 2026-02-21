@@ -299,12 +299,20 @@ class Toast(QWidget):
     def __init__(self, text, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_ShowWithoutActivating); self.setAttribute(Qt.WA_TranslucentBackground)
         # Professional glass-morphism style
-        self.setStyleSheet("background: rgba(28, 28, 30, 0.95); color: #FFF; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 10px 20px; font-weight: 600; font-size: 12px;")
+        self.setStyleSheet("background: rgba(44, 44, 46, 0.95); color: #FFF; border: 1px solid rgba(255,255,255,0.15); border-radius: 14px; padding: 12px 24px; font-weight: 700; font-size: 13px; letter-spacing: 0.5px;")
         l = QVBoxLayout(self); self.lbl = QLabel(text); l.addWidget(self.lbl)
-        self.timer = QTimer(); self.timer.timeout.connect(self.hide); self.timer.start(2500)
-    def show_msg(self, x, y): self.move(x, y); self.show()
+        
+        # Fade out animation
+        self.anim = QPropertyAnimation(self, b"windowOpacity")
+        self.anim.setDuration(800)
+        self.anim.setStartValue(1.0)
+        self.anim.setEndValue(0.0)
+        self.anim.finished.connect(self.hide)
+        
+        self.timer = QTimer(); self.timer.timeout.connect(self.anim.start); self.timer.start(2500)
+    def show_msg(self, x, y): self.move(x, y); self.setWindowOpacity(1.0); self.show()
 
 class DonutChart(QWidget):
     def __init__(self, title, color_hex, parent=None):
@@ -331,6 +339,8 @@ class ResizableCard(QFrame):
     def __init__(self, title, sub, is_docker=False, container_id=None):
         super().__init__()
         self.setObjectName("Card"); self.setMinimumSize(320, 240); self.resize(340, 240)
+        eff = QGraphicsDropShadowEffect(); eff.setBlurRadius(30); eff.setColor(QColor(0,0,0, 30)); eff.setOffset(0,10)
+        self.setGraphicsEffect(eff)
         self.is_docker = is_docker; self.container_id = container_id; self.title_text = title; self.checker = None
         self.base_image = sub if is_docker else None # Store image tag for purging
         l = QVBoxLayout(self); l.setContentsMargins(0,0,0,0); l.setSpacing(0)
@@ -497,7 +507,7 @@ class ThemeOps:
             
         return f"""
         QMainWindow {{ background-color: {bg}; }}
-        QWidget {{ font-family: -apple-system, 'Helvetica Neue', 'Segoe UI', Arial, sans-serif; color: {txt}; letter-spacing: 0.2px; }}
+        QWidget {{ font-family: 'Inter', 'Roboto', -apple-system, 'SF Pro Display', sans-serif; color: {txt}; letter-spacing: 0.2px; }}
         QFrame#Sidebar {{ background-color: {sb}; border-right: 1.5px solid {brd}; }}
         QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 12px; }}
         QFrame#ModalBox {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 16px; }}
