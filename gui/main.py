@@ -36,7 +36,7 @@ from PyQt5.QtGui import (
     QColor, QFont, QIcon, QImage, QPixmap, QPainter, QPen, QBrush, 
     QCursor, QShowEvent, QResizeEvent, QMouseEvent, QTextCursor
 )
-import PyQt5.sip # Explicitly for PyInstaller
+# Note: PyQt5.sip is handled via --hidden-import in build_release.py
 
 
 # =============================================================================

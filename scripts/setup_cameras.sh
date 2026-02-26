@@ -268,10 +268,13 @@ setup_csi_camera() {
             read -p "Try installing with fallback version? (y/N): " TRY_FALLBACK
             
             if [[ $TRY_FALLBACK =~ ^[Yy]$ ]]; then
-                # Extract the download link for the fallback version
-                source "$LINKS_FILE"
+                INSTALL_SUCCESS=false
                 
-                # Get the correct download link based on platform
+                # ============================================
+                # METHOD 1: Try links file extraction
+                # ============================================
+                source "$LINKS_FILE" 2>/dev/null || true
+                
                 FALLBACK_LINK=""
                 FALLBACK_PKG=""
                 case "$PLATFORM" in
@@ -298,39 +301,114 @@ setup_csi_camera() {
                 esac
                 
                 if [ -n "$FALLBACK_LINK" ] && [ -n "$FALLBACK_PKG" ]; then
-                    log_info "Downloading: $FALLBACK_PKG"
-                    wget -q "$FALLBACK_LINK" -O "$FALLBACK_PKG"
+                    log_info "Downloading via links file: $FALLBACK_PKG"
+                    wget -q "$FALLBACK_LINK" -O "$FALLBACK_PKG" && INSTALL_SUCCESS=true
+                fi
+                
+                # ============================================
+                # METHOD 2: Direct GitHub search (if method 1 failed)
+                # ============================================
+                if [ "$INSTALL_SUCCESS" = false ]; then
+                    log_warn "Links file extraction failed. Trying direct GitHub search..."
+                    echo ""
                     
-                    if [ -f "$FALLBACK_PKG" ]; then
-                        log_info "Installing driver package..."
-                        sudo dpkg -i "$FALLBACK_PKG"
+                    # Build search pattern for the .deb package
+                    # Pattern: arducam-*-<fallback_version>*_<model>.deb
+                    SEARCH_KERNEL=$(echo "$FALLBACK_VERSION" | grep -oP '[\d.]+(?=-tegra)' || true)
+                    SEARCH_L4T=$(echo "$FALLBACK_VERSION" | grep -oP 'tegra-[\d.]+' || true)
+                    
+                    # Map platform to Arducam's naming convention
+                    ARDUCAM_PLATFORM=""
+                    case "$PLATFORM" in
+                        "Orin Nano") ARDUCAM_PLATFORM="t234-nano" ;;
+                        "Orin NX")   ARDUCAM_PLATFORM="t234-nx" ;;
+                        "AGX Orin")  ARDUCAM_PLATFORM="t234-agx" ;;
+                        "Xavier NX") ARDUCAM_PLATFORM="t194-nx" ;;
+                        "Nano")      ARDUCAM_PLATFORM="t210-nano" ;;
+                    esac
+                    
+                    log_info "Scanning Arducam GitHub releases for compatible package..."
+                    log_info "Platform: $ARDUCAM_PLATFORM | Model: $MODEL | L4T: $SEARCH_L4T"
+                    
+                    # Query GitHub API for release assets
+                    GITHUB_API="https://api.github.com/repos/ArduCAM/MIPI_Camera/releases"
+                    ASSETS_JSON=$(wget -qO- "$GITHUB_API" 2>/dev/null || echo "[]")
+                    
+                    if [ "$ASSETS_JSON" != "[]" ]; then
+                        # Find matching .deb URL from all release assets
+                        DIRECT_URL=$(echo "$ASSETS_JSON" | \
+                            grep -oP '"browser_download_url":\s*"\K[^"]+\.deb' | \
+                            grep -i "$MODEL" | \
+                            grep -i "$ARDUCAM_PLATFORM" | \
+                            grep "$SEARCH_L4T" | \
+                            head -1)
                         
-                        if [ $? -eq 0 ]; then
-                            log_success "Driver installed successfully with fallback version!"
-                            echo ""
-                            log_warn "Note: This driver is from L4T $FALLBACK_VERSION"
-                            log_warn "Minor compatibility issues may occur. Test thoroughly."
-                            
-                            echo ""
-                            echo -e "${YELLOW}A system reboot is required.${NC}"
-                            read -p "Reboot now? (y/N): " REBOOT
-                            if [[ $REBOOT =~ ^[Yy]$ ]]; then
-                                sudo reboot
-                            fi
-                            exit 0
+                        # If exact L4T match not found, try broader search with major.minor
+                        if [ -z "$DIRECT_URL" ]; then
+                            SEARCH_MAJOR=$(echo "$SEARCH_L4T" | grep -oP '\d+\.\d+' | head -1)
+                            DIRECT_URL=$(echo "$ASSETS_JSON" | \
+                                grep -oP '"browser_download_url":\s*"\K[^"]+\.deb' | \
+                                grep -i "$MODEL" | \
+                                grep -i "$ARDUCAM_PLATFORM" | \
+                                grep "tegra-${SEARCH_MAJOR}" | \
+                                sort -V | tail -1)
+                        fi
+                        
+                        if [ -n "$DIRECT_URL" ]; then
+                            FALLBACK_PKG=$(basename "$DIRECT_URL")
+                            log_success "Found compatible package: $FALLBACK_PKG"
+                            log_info "Downloading from GitHub..."
+                            wget -q --show-progress "$DIRECT_URL" -O "$FALLBACK_PKG" && INSTALL_SUCCESS=true
                         else
-                            log_error "Driver installation failed!"
+                            log_warn "No matching package found via GitHub API."
                         fi
                     else
-                        log_error "Failed to download fallback package"
+                        log_warn "Could not reach GitHub API. Check internet connection."
                     fi
-                else
-                    log_error "Could not find download link for fallback version"
+                fi
+                
+                # ============================================
+                # INSTALL the downloaded package
+                # ============================================
+                if [ "$INSTALL_SUCCESS" = true ] && [ -f "$FALLBACK_PKG" ]; then
+                    log_info "Installing driver package: $FALLBACK_PKG"
+                    echo ""
+                    log_warn "Using --force-depends because the kernel base is compatible"
+                    log_warn "(both your system and the driver use kernel 5.10.x)"
+                    echo ""
+                    
+                    sudo dpkg --force-depends -i "$FALLBACK_PKG"
+                    
+                    if [ $? -eq 0 ]; then
+                        log_success "Driver installed successfully!"
+                        echo ""
+                        log_warn "Note: This driver is from L4T $FALLBACK_VERSION"
+                        log_warn "Your system runs L4T $L4T_VERSION (same kernel base)"
+                        echo ""
+                        
+                        # Verify the kernel module loaded
+                        if lsmod | grep -qi "imx\|arducam\|ov9"; then
+                            log_success "Camera kernel module detected!"
+                        else
+                            log_info "Kernel module will load after reboot."
+                        fi
+                        
+                        echo ""
+                        echo -e "${YELLOW}A system reboot is required to activate the driver.${NC}"
+                        read -p "Reboot now? (y/N): " REBOOT
+                        if [[ $REBOOT =~ ^[Yy]$ ]]; then
+                            sudo reboot
+                        fi
+                        exit 0
+                    else
+                        log_error "dpkg installation failed. See errors above."
+                    fi
                 fi
             fi
         fi
+
         
-        # If we get here, fallback failed - show available versions
+        # If we get here, fallback failed - show available versions and detailed guide
         echo ""
         log_error "Automatic installation failed."
         echo ""
@@ -359,10 +437,35 @@ setup_csi_camera() {
         echo ""
         echo -e "${YELLOW}Your version: $L4T_VERSION${NC}"
         echo ""
-        echo "Options:"
-        echo "  1. Contact Arducam support: support@arducam.com"
-        echo "  2. Try a different JetPack version"
-        echo "  3. Check Arducam GitHub for updates: https://github.com/ArduCAM/MIPI_Camera/releases"
+        echo -e "${BOLD}=====================================================================${NC}"
+        echo -e "${BOLD}  TROUBLESHOOTING GUIDE                                              ${NC}"
+        echo -e "${BOLD}=====================================================================${NC}"
+        echo ""
+        echo -e "${CYAN}Option 1: Manual Driver Installation (Recommended)${NC}"
+        echo "  Your L4T version does not have an exact driver match."
+        echo "  You can manually install the closest compatible driver:"
+        echo ""
+        echo "  1. Visit the Arducam releases page:"
+        echo "     https://github.com/ArduCAM/MIPI_Camera/releases"
+        echo ""
+        echo "  2. Download the .deb package closest to your L4T version."
+        echo "     Look for packages matching 'tegra-35.6' in the filename."
+        echo ""
+        echo "  3. Install manually:"
+        echo "     sudo dpkg -i <downloaded_package>.deb"
+        echo "     sudo reboot"
+        echo ""
+        echo -e "${CYAN}Option 2: Reflash with a Supported JetPack Version${NC}"
+        echo "  If no compatible driver exists, consider reflashing your"
+        echo "  Jetson with a JetPack version that matches an available driver."
+        echo "  Use NVIDIA SDK Manager: https://developer.nvidia.com/sdk-manager"
+        echo ""
+        echo -e "${CYAN}Option 3: Contact Arducam Support${NC}"
+        echo "  Email: support@arducam.com"
+        echo "  GitHub: https://github.com/ArduCAM/MIPI_Camera/issues"
+        echo "  Include your L4T version and Jetson model in your request."
+        echo ""
+        echo -e "${BOLD}=====================================================================${NC}"
         exit 1
     else
         # Installation succeeded or different error

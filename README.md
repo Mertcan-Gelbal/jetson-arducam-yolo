@@ -20,7 +20,7 @@ cd jetson-arducam-yolo
 
 # Run the master installer
 chmod +x install.sh
-./install.sh --all
+./install.sh
 ```
 
 ### What `install.sh` Provides:
@@ -33,9 +33,41 @@ chmod +x install.sh
 
 *   **`install.sh`**: The primary entry point for full-system initialization.
 *   **`Dockerfile`**: Defines the optimized, hardware-accelerated AI environment.
-*   **`gui/`**: Contains the **VisionDock Studio**—a professional desktop interface for managingカメラ streams and AI workspaces.
+*   **`gui/`**: Contains **VisionDock Studio**—a professional desktop interface for managing camera streams and AI workspaces.
 *   **`scripts/`**: Modular utilities for camera setup, image building, and health checks.
 *   **`examples/`**: Production-ready Python templates for inference and spatial analytics.
+
+## Troubleshooting: CSI Camera Driver Installation
+
+If the automated installer fails with **"Automatic installation failed"** or **"Could not find download link for fallback version"**, this means your Jetson's L4T (Linux for Tegra) kernel version does not have an exact match in Arducam's driver repository.
+
+### Solution 1: Manual Driver Installation (Recommended)
+
+1. Check your current L4T version:
+   ```bash
+   dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel
+   ```
+
+2. Visit the [Arducam MIPI Camera Releases](https://github.com/ArduCAM/MIPI_Camera/releases) page.
+
+3. Download the `.deb` driver package that is **closest** to your L4T version. Match the `tegra-XX.X` portion of the filename (e.g., if your version is `35.6.4`, look for a package with `35.6.x`).
+
+4. Install manually and reboot:
+   ```bash
+   sudo dpkg -i <downloaded_arducam_package>.deb
+   sudo reboot
+   ```
+
+### Solution 2: Reflash with a Compatible JetPack
+
+If no compatible driver exists for your current system, you can reflash your Jetson with a JetPack version that has official Arducam support using [NVIDIA SDK Manager](https://developer.nvidia.com/sdk-manager).
+
+### Solution 3: Contact Arducam Support
+
+*   **Email:** support@arducam.com
+*   **GitHub Issues:** [ArduCAM/MIPI_Camera](https://github.com/ArduCAM/MIPI_Camera/issues)
+
+Include your L4T version (`dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel`) and Jetson model name in your support request.
 
 ## Support
 For technical support or commercial inquiries, please refer to the internal documentation in the `docs/` folder or open a GitHub issue. Developed for professional AI engineers and vision researchers.
