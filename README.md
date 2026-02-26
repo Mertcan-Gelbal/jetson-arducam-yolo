@@ -20,7 +20,7 @@ cd jetson-arducam-yolo
 
 # Run the master installer
 chmod +x install.sh
-./install.sh --all
+./install.sh
 ```
 
 ### What `install.sh` Provides:
