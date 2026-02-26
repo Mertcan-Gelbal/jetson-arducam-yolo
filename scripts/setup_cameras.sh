@@ -330,7 +330,7 @@ setup_csi_camera() {
             fi
         fi
         
-        # If we get here, fallback failed - show available versions
+        # If we get here, fallback failed - show available versions and detailed guide
         echo ""
         log_error "Automatic installation failed."
         echo ""
@@ -359,10 +359,35 @@ setup_csi_camera() {
         echo ""
         echo -e "${YELLOW}Your version: $L4T_VERSION${NC}"
         echo ""
-        echo "Options:"
-        echo "  1. Contact Arducam support: support@arducam.com"
-        echo "  2. Try a different JetPack version"
-        echo "  3. Check Arducam GitHub for updates: https://github.com/ArduCAM/MIPI_Camera/releases"
+        echo -e "${BOLD}=====================================================================${NC}"
+        echo -e "${BOLD}  TROUBLESHOOTING GUIDE                                              ${NC}"
+        echo -e "${BOLD}=====================================================================${NC}"
+        echo ""
+        echo -e "${CYAN}Option 1: Manual Driver Installation (Recommended)${NC}"
+        echo "  Your L4T version does not have an exact driver match."
+        echo "  You can manually install the closest compatible driver:"
+        echo ""
+        echo "  1. Visit the Arducam releases page:"
+        echo "     https://github.com/ArduCAM/MIPI_Camera/releases"
+        echo ""
+        echo "  2. Download the .deb package closest to your L4T version."
+        echo "     Look for packages matching 'tegra-35.6' in the filename."
+        echo ""
+        echo "  3. Install manually:"
+        echo "     sudo dpkg -i <downloaded_package>.deb"
+        echo "     sudo reboot"
+        echo ""
+        echo -e "${CYAN}Option 2: Reflash with a Supported JetPack Version${NC}"
+        echo "  If no compatible driver exists, consider reflashing your"
+        echo "  Jetson with a JetPack version that matches an available driver."
+        echo "  Use NVIDIA SDK Manager: https://developer.nvidia.com/sdk-manager"
+        echo ""
+        echo -e "${CYAN}Option 3: Contact Arducam Support${NC}"
+        echo "  Email: support@arducam.com"
+        echo "  GitHub: https://github.com/ArduCAM/MIPI_Camera/issues"
+        echo "  Include your L4T version and Jetson model in your request."
+        echo ""
+        echo -e "${BOLD}=====================================================================${NC}"
         exit 1
     else
         # Installation succeeded or different error
