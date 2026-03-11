@@ -69,6 +69,15 @@ If no compatible driver exists for your current system, you can reflash your Jet
 
 Include your L4T version (`dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel`) and Jetson model name in your support request.
 
+## Documentation
+
+| Rehber | Açıklama |
+|--------|----------|
+| [Mac'ten Jetson Yönetimi](docs/MAC_JETSON_YONETIMI.md) | Mac'ten kamera cihazını yönetme (ZeroTier, adım adım) |
+| [USAGE](docs/USAGE.md) | Kullanım ve örnekler |
+| [INSTALLATION](docs/INSTALLATION.md) | Kurulum (Jetson, kamera, Docker) |
+| [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Sorun giderme |
+
 ## Support
 For technical support or commercial inquiries, please refer to the internal documentation in the `docs/` folder or open a GitHub issue. Developed for professional AI engineers and vision researchers.
 

@@ -6,6 +6,8 @@ This guide provides detailed usage instructions and examples for the YOLOv8 Ardu
 
 - [Basic Usage](#basic-usage)
 - [Advanced Features](#advanced-features)
+- [VisionDock: workspaces directory](#visiondock-workspaces-directory)
+- [Remote Management (Mac → Jetson)](#remote-management-mac--jetson)
 - [Example Scripts](#example-scripts)
 - [Docker Commands](#docker-commands)
 - [Performance Optimization](#performance-optimization)
@@ -63,6 +65,57 @@ python3 examples/multi_camera_detection.py --cameras 0 1 --conf 0.3 --display
 - Grid layout for multiple cameras
 - Independent processing per camera
 - Synchronized display
+
+## VisionDock: workspaces directory
+
+Proje kökündeki **`workspaces/`** dizini VisionDock Studio tarafından kullanılır. **Device: Local** ile yeni bir workspace oluşturduğunuzda, uygulama bu dizinin altında workspace adına karşılık gelen bir klasör açar (örn. `workspaces/my_lab`) ve Docker container’ı bu klasörü `/workspace` olarak mount eder. Böylece container içindeki dosyalar doğrudan diskinizde kalır. Remote device seçildiğinde mount kullanılmaz; container uzak cihazda kendi dosya sisteminde çalışır. Bu dizin otomatik oluşturulur ve `.gitignore`’da yer alır (versiyon kontrolüne eklenmez).
+
+## Remote Management (Mac → Jetson)
+
+VisionDock GUI’yi Mac’te çalıştırıp Jetson’ı (kamera erişimli cihaz) ZeroTier ağı üzerinden yönetebilirsiniz.
+
+**Kullanıcı dostu adım adım rehber:** [Mac'ten Jetson'ı Yönetme Rehberi](MAC_JETSON_YONETIMI.md) — tek sayfa, kurulum listesi ve sık sorunlar.
+
+### Gereksinimler
+
+1. **Mac:** Python 3, PyQt5, Docker CLI (uzak Docker için). GUI: `./start_gui.sh` veya `python3 gui/main.py`.
+2. **Jetson:** Docker, ZeroTier üyesi, Docker daemon’ın TCP üzerinden dinlemesi (aşağıda).
+3. **ZeroTier:** Her iki cihaz aynı ZeroTier ağına katılmış olmalı.
+
+### Jetson’da Docker TCP erişimi
+
+Jetson’da Docker’a uzaktan bağlanmak için daemon’ın `2375` portunu dinlemesi gerekir:
+
+```bash
+# systemd override ile
+sudo mkdir -p /etc/systemd/system/docker.service.d
+echo '[Service]
+ExecStart=
+ExecStart=/usr/bin/dockerd -H fd -H tcp://0.0.0.0:2375' | sudo tee /etc/systemd/system/docker.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+Güvenlik: Sadece güvendiğiniz ağlarda (örn. ZeroTier) kullanın; gerekirse firewall ile 2375’i sadece ZeroTier arayüzüne kısıtlayın.
+
+### GUI’de uzak düğüm ayarı
+
+1. **Settings** sekmesine gidin.
+2. **REMOTE NODE (IP):** Jetson’ın ZeroTier ağ IP’sini girin (örn. `10.144.1.5`). ZT peer listesi Node ID gösterir; Docker için **ağ IP’si** gerekir (Jetson’da `zerotier-cli listnetworks` ile kendi IP’nizi görebilirsiniz).
+3. **KAMERA CİHAZI (UZAK DÜĞÜM):** Bu alan Jetson’a TCP 2375 ile erişimi test eder; **Çevrimiçi** / **Çevrimdışı** gösterir. Durum periyodik güncellenir.
+4. Workspaces’te container listesi ve işlemler artık seçili uzak düğüme (Jetson) gider.
+
+Böylece Mac’ten container’ları listeleyebilir, log/shell açabilir ve kamera cihazının açık/erişilebilir olup olmadığını görebilirsiniz.
+
+### Kamera akışını uzaktan izleme
+
+Jetson’da UDP stream açıp Mac’te VLC ile izleyebilirsiniz:
+
+```bash
+# Jetson'da (container veya host)
+python3 examples/analytics_detection.py --stream-out --stream-ip <MAC_ZEROTIER_IP> --display
+# Mac'te VLC: Media → Open Network Stream → udp://@0.0.0.0:5000
+```
 
 ### Hardware-Accelerated Pipeline
 
