@@ -91,4 +91,7 @@ gui/*.db
 gui/*.mp4
 gui/*.avi
 gui/recordings/
+
+# Local workspace bind-mount directories (created by VisionDock when adding workspaces)
+workspaces/
 # NOTE: gui/requirements.txt and gui/catalog.json ARE tracked and should NOT be listed here

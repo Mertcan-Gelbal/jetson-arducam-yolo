@@ -1,4 +1,4 @@
-import sys, os, psutil, subprocess, cv2, time, platform, numpy as np, glob, random, string, threading, json, sqlite3, logging
+import sys, os, re, psutil, subprocess, cv2, time, platform, numpy as np, glob, random, string, threading, json, sqlite3, logging, socket
 from datetime import datetime
 
 # Logging Setup
@@ -11,7 +11,10 @@ def resource_path(relative_path):
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+    p = os.path.join(base_path, relative_path)
+    if not os.path.exists(p) and base_path.endswith("gui"):
+        p = os.path.join(os.path.dirname(base_path), relative_path)
+    return p
 
 # Silence console noise after basic imports
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
@@ -28,13 +31,12 @@ from PyQt5.QtWidgets import (
 )
 
 from PyQt5.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect, 
+    Qt, QTimer, QThread, pyqtSignal, QSize, QPoint, QRect, QUrl,
     QPropertyAnimation, QEasingCurve, pyqtProperty, QEvent, QMutex
 )
-
 from PyQt5.QtGui import (
     QColor, QFont, QIcon, QImage, QPixmap, QPainter, QPen, QBrush, 
-    QCursor, QShowEvent, QResizeEvent, QMouseEvent, QTextCursor
+    QCursor, QShowEvent, QResizeEvent, QMouseEvent, QTextCursor, QDesktopServices
 )
 # Note: PyQt5.sip is handled via --hidden-import in build_release.py
 
@@ -71,15 +73,31 @@ class DBManager:
 
     def save_workspace(self, name, img, cid):
         with sqlite3.connect(self.db_path) as conn:
+            # Aynı container için tek kayıt: önce varsa sil (çift kayıt / çift kart engelle)
+            short = (cid or "")[:12]
+            conn.execute("DELETE FROM workspaces WHERE cid = ? OR cid LIKE ?", (cid, short + "%"))
             conn.execute("INSERT INTO workspaces (name, img, cid) VALUES (?, ?, ?)", (name, img, cid))
 
     def get_workspaces(self):
         with sqlite3.connect(self.db_path) as conn:
             return conn.execute("SELECT name, img, cid FROM workspaces").fetchall()
 
+    def get_workspace_by_cid(self, cid):
+        """Container id (kısa veya tam) ile kayıtlı isim/img döner; yoksa None."""
+        if not cid:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            short = (cid or "")[:12]
+            row = conn.execute(
+                "SELECT name, img FROM workspaces WHERE cid = ? OR cid LIKE ? LIMIT 1",
+                (cid, short + "%")
+            ).fetchone()
+            return (row[0], row[1]) if row else None
+
     def remove_workspace(self, cid):
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM workspaces WHERE cid = ?", (cid,))
+            short = (cid or "")[:12]
+            conn.execute("DELETE FROM workspaces WHERE cid = ? OR cid LIKE ?", (cid, short + "%"))
 
 # =============================================================================
 #  CATALOG MANAGER (DYNAMIC)
@@ -152,15 +170,53 @@ def list_cameras():
             cap.release()
     return cams
 
-def get_zerotier_nodes():
+def get_zerotier_networks():
+    """Returns list of {nwid, name, status, assignedAddresses[]} for each joined network."""
+    try:
+        if platform.system() == "Windows":
+            out = subprocess.check_output("zerotier-one_x64.exe -j listnetworks", shell=True).decode()
+        else:
+            out = subprocess.check_output("zerotier-cli -j listnetworks", shell=True).decode()
+        data = json.loads(out)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            if data.get("nwid"):
+                return [data]
+            if "networks" in data and isinstance(data["networks"], list):
+                return data["networks"]
+            return []
+        return []
+    except Exception:
+        return []
+
+
+def get_zerotier_peer_count():
+    """Number of peers currently visible (LEAF nodes)."""
     try:
         if platform.system() == "Windows":
             out = subprocess.check_output("zerotier-one_x64.exe -j listpeers", shell=True).decode()
         else:
             out = subprocess.check_output("zerotier-cli -j listpeers", shell=True).decode()
         peers = json.loads(out)
-        return [p['address'] for p in peers if p['paths']]
-    except: return []
+        return sum(1 for p in peers if p.get("paths"))
+    except Exception:
+        return 0
+
+
+def check_remote_node_reachable(host, port=2375, timeout=2):
+    """Jetson/uzak düğümün (Docker) erişilebilir olup olmadığını kontrol eder. ZeroTier IP ile kullanın."""
+    if not host or not host.strip():
+        return False
+    host = host.strip()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True
+    except Exception:
+        return False
 
 # =============================================================================
 #  CORE LOGIC & THREADS
@@ -174,9 +230,13 @@ class DockerManager:
         cls._host = f"tcp://{ip}:2375" if ip else None
 
     @classmethod
-    def get_cmd(cls, base_cmd):
-        if cls._host: return f"docker -H {cls._host} {base_cmd}"
-        return f"docker {base_cmd}"
+    def get_cmd(cls, base_cmd, host_override=None):
+        """host_override: None = use current Settings host, '' = local, 'IP' = that host."""
+        if host_override is not None:
+            h = f"tcp://{host_override}:2375" if (host_override and str(host_override).strip()) else None
+        else:
+            h = cls._host
+        return f"docker -H {h} {base_cmd}" if h else f"docker {base_cmd}"
 
     @staticmethod
     def is_running():
@@ -241,18 +301,24 @@ class DockerManager:
     @staticmethod
     def open_terminal(cid):
         plat = platform.system()
+        exec_cmd = DockerManager.get_cmd(f"exec -it {cid} /bin/sh")
+        if "/bin/sh" in exec_cmd:
+            exec_cmd_alt = DockerManager.get_cmd(f"exec -it {cid} /bin/bash")
+        else:
+            exec_cmd_alt = exec_cmd
         try:
             if plat == "Darwin":
-                cmd = f"osascript -e 'tell application \"Terminal\" to do script \"docker exec -it {cid} /bin/sh || docker exec -it {cid} /bin/bash\"' -e 'activate application \"Terminal\"'"
+                script = f"{exec_cmd} || {exec_cmd_alt}"
+                cmd = f"osascript -e 'tell application \"Terminal\" to do script \"{script}\"' -e 'activate application \"Terminal\"'"
                 subprocess.Popen(cmd, shell=True)
             elif plat == "Linux":
                 terminals = ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"]
                 for t in terminals:
                     if subprocess.run(f"which {t}", shell=True, capture_output=True).returncode == 0:
-                        subprocess.Popen(f"{t} -e \"docker exec -it {cid} /bin/sh\"", shell=True)
+                        subprocess.Popen(f"{t} -e \"{exec_cmd}\"", shell=True)
                         return
             elif plat == "Windows":
-                subprocess.Popen(f"start powershell.exe -NoExit -Command \"docker exec -it {cid} sh\"", shell=True)
+                subprocess.Popen(f"start powershell.exe -NoExit -Command \"{exec_cmd}\"", shell=True)
         except: pass
 
 class DockerCreationThread(QThread):
@@ -275,18 +341,35 @@ class StatusCheckThread(QThread):
     def run(self):
         res = {"running": False, "cpu": "0%", "ram": "0MB", "size": "0GB"}
         try:
-            out_run = subprocess.check_output(f"docker inspect -f '{{{{.State.Running}}}}' {self.cid}", shell=True).decode().strip()
+            cmd_run = DockerManager.get_cmd(f"inspect -f '{{{{.State.Running}}}}' {self.cid}")
+            out_run = subprocess.check_output(cmd_run, shell=True).decode().strip()
             res["running"] = (out_run == 'true')
             if res["running"]:
-                out_stats = subprocess.check_output(f"docker stats --no-stream --format '{{{{.CPUPerc}}}}|{{{{.MemUsage}}}}' {self.cid}", shell=True).decode().strip()
+                cmd_stats = DockerManager.get_cmd(f"stats --no-stream --format '{{{{.CPUPerc}}}}|{{{{.MemUsage}}}}' {self.cid}")
+                out_stats = subprocess.check_output(cmd_stats, shell=True).decode().strip()
                 if "|" in out_stats:
                     scpu, sram = out_stats.split("|")
                     res["cpu"] = scpu
                     res["ram"] = sram.split(" / ")[0]
-                out_size = subprocess.check_output(f"docker ps -s --filter id={self.cid} --format '{{{{.Size}}}}'", shell=True).decode().strip()
+                cmd_size = DockerManager.get_cmd(f"ps -s --filter id={self.cid} --format '{{{{.Size}}}}'")
+                out_size = subprocess.check_output(cmd_size, shell=True).decode().strip()
                 if out_size: res["size"] = out_size.split(" (")[0]
             self.status_signal.emit(res)
         except: self.status_signal.emit(res)
+
+
+class RemoteNodeStatusThread(QThread):
+    """ZeroTier/network üzerinden kamera erişimli cihazın (Jetson) açık/erişilebilir olup olmadığını kontrol eder."""
+    status_signal = pyqtSignal(bool)  # True=çevrimiçi, False=çevrimdışı
+
+    def __init__(self, host):
+        super().__init__()
+        self.host = (host or "").strip()
+
+    def run(self):
+        ok = check_remote_node_reachable(self.host) if self.host else False
+        self.status_signal.emit(ok)
+
 
 # =============================================================================
 #  CUSTOM WIDGETS
@@ -401,7 +484,10 @@ class ResizableCard(QFrame):
             self.ico_lbl.setStyleSheet("background: rgba(0,122,255,0.1); color: #007AFF; font-size: 11px; font-weight: 900; border-radius: 6px; border: 1px solid rgba(0,122,255,0.2);")
             
             v_meta = QVBoxLayout(); v_meta.setSpacing(2)
-            self.l_img = QLabel(f"TAG: {sub[:25]}..."); self.l_img.setStyleSheet("color: #007AFF; font-size: 9px; font-weight: 900; letter-spacing: 0.5px; border: none; background: transparent;")
+            tag_display = (sub[:25] + "…") if len(sub) > 25 else sub
+            self.l_img = QLabel(f"TAG: {tag_display}")
+            self.l_img.setStyleSheet("color: #007AFF; font-size: 9px; font-weight: 900; letter-spacing: 0.5px; border: none; background: transparent;")
+            self.l_img.setWordWrap(True); self.l_img.setMaximumWidth(280)
             v_meta.addWidget(self.l_img); icon_box.addLayout(v_meta); cl.addLayout(icon_box)
             
             m_box = QFrame(); m_box.setStyleSheet("background: rgba(128,128,128,0.04); border: 1.2px solid rgba(128,128,128,0.12); border-radius: 10px;")
@@ -435,7 +521,9 @@ class ResizableCard(QFrame):
             
             bh.addStretch(); bh.addWidget(self.rec_btn); cl.addLayout(bh)
 
-            self.ai_meta = QLabel("OBJECTS: 0"); self.ai_meta.setStyleSheet("color: rgba(128,128,128,0.5); font-size: 8px; font-weight: 800; letter-spacing: 0.5px;")
+            self.ai_meta = QLabel("OBJECTS: 0")
+            self.ai_meta.setStyleSheet("color: rgba(128,128,128,0.5); font-size: 8px; font-weight: 800; letter-spacing: 0.5px;")
+            self.ai_meta.setWordWrap(True); self.ai_meta.setMaximumWidth(300)
             cl.addWidget(self.ai_meta)
 
             self.view = QLabel("INITIALIZING FEED..."); self.view.setObjectName("PreviewArea"); self.view.setAlignment(Qt.AlignCenter)
@@ -445,14 +533,25 @@ class ResizableCard(QFrame):
             cl.addWidget(self.view, 1) 
         self.grip = QSizeGrip(self); self.grip.setFixedSize(16, 16); self.grip.setStyleSheet("background: transparent;")
 
-    def resizeEvent(self, e): self.grip.move(self.width()-16, self.height()-16); super().resizeEvent(e)
+    def resizeEvent(self, e):
+        self.grip.move(self.width() - 16, self.height() - 16)
+        if getattr(self, "_last_frame", None) is not None and hasattr(self, "view") and not self.is_docker:
+            last = self._last_frame.copy()
+            card_ref = self
+            def _redraw():
+                if getattr(card_ref, "view", None) and getattr(card_ref, "_last_frame", None) is not None:
+                    card_ref.upd_img(last)
+            QTimer.singleShot(0, _redraw)
+        super().resizeEvent(e)
     def sizeHint(self): return self.size()
     def perform_delete(self, purge_image=False):
         if hasattr(self, 't'): self.t.stop()
         if self.is_docker and self.container_id:
-            subprocess.run(f"docker rm -f {self.container_id}", shell=True)
+            cmd_rm = DockerManager.get_cmd(f"rm -f {self.container_id}")
+            subprocess.run(cmd_rm, shell=True)
             if purge_image and hasattr(self, 'base_image') and self.base_image:
-                subprocess.Popen(f"docker rmi -f {self.base_image}", shell=True)
+                cmd_rmi = DockerManager.get_cmd(f"rmi -f {self.base_image}")
+                subprocess.Popen(cmd_rmi, shell=True)
             if hasattr(self, 'db'): self.db.remove_workspace(self.container_id)
         else:
             if hasattr(self, 'db'): self.db.remove_camera(self.sub_val)
@@ -465,7 +564,7 @@ class ResizableCard(QFrame):
         self.checker = StatusCheckThread(self.container_id); self.checker.status_signal.connect(self.update_status_from_thread); self.checker.start()
     def update_status_from_thread(self, s):
         if not hasattr(self, 'm_cpu'): return
-        is_r = s["running"]; self.set_status_info("Active" if is_r else "Static", "#30D158" if is_r else "#FF453A")
+        is_r = s["running"]; self.set_status_info("Running" if is_r else "Stopped", "#30D158" if is_r else "#FF453A")
         if is_r: self.m_cpu.setText(s['cpu']); self.m_ram.setText(s['ram']); self.m_disk.setText(s['size'])
         else: self.m_cpu.setText("0.00%"); self.m_ram.setText("0MB"); self.m_disk.setText(s['size'])
         if self.isVisible(): QTimer.singleShot(3000, self.start_monitoring)
@@ -476,25 +575,60 @@ class ResizableCard(QFrame):
             else: self.rec_badge.hide()
 
     def update_ai_ui(self, meta):
-        if hasattr(self, 'ai_meta') and "objects" in meta:
-            count = meta['objects']
-            self.ai_meta.setText(f"OBJECTS DETECTED: {count}")
-            self.ai_meta.setStyleSheet(f"color: {'#007AFF' if count>0 else 'rgba(255,255,255,0.3)'}; font-size: 8px; font-weight: 900; letter-spacing: 0.5px;")
-            if count > 0 and random.random() > 0.95: # Throttled notification
-                if hasattr(self.parent(), 'parent') and hasattr(self.parent().parent().parent().parent(), 'show_toast'):
-                    self.parent().parent().parent().parent().show_toast(f"AI: Detection in {self.title_text}!")
+        if not hasattr(self, 'ai_meta'):
+            return
+        count = meta.get('objects', 0)
+        classes = meta.get('classes') or {}
+        if classes:
+            parts = [f"{v} {k}" for k, v in sorted(classes.items(), key=lambda x: -x[1])[:5]]
+            text = ", ".join(parts)
+        else:
+            text = f"Objects: {count}" if count else "Objects: 0"
+        self.ai_meta.setText(text)
+        self.ai_meta.setStyleSheet(f"color: {'#007AFF' if count>0 else 'rgba(255,255,255,0.3)'}; font-size: 8px; font-weight: 900; letter-spacing: 0.5px;")
+        if count > 0 and random.random() > 0.95:
+            try:
+                app = self.window()
+                if app and hasattr(app, 'show_toast'):
+                    app.show_toast(f"Detection: {self.title_text}")
+            except Exception:
+                pass
 
     def take_snapshot(self):
         if hasattr(self, 't'): self.t.snapshot()
 
     def show_logs(self):
         logs = DockerManager.get_logs(self.container_id)
-        msg = QMessageBox(self); msg.setWindowTitle(f"LOGS: {self.title_text}"); msg.setText(logs); msg.setStyleSheet("QLabel{font-family: monospace; font-size: 11px; min-width: 600px;}"); msg.exec_()
+        msg = QMessageBox(self)
+        msg.setWindowTitle(f"LOGS: {self.title_text}")
+        max_log_len = 12000
+        if len(logs) > max_log_len:
+            logs = logs[-max_log_len:] + "\n\n… [truncated]"
+        msg.setText(logs)
+        msg.setStyleSheet("QLabel{font-family: monospace; font-size: 11px; min-width: 400px; max-width: 700px;} QMessageBox{ min-width: 420px; max-width: 720px; }")
+        for lbl in msg.findChildren(QLabel):
+            lbl.setWordWrap(True)
+            lbl.setMaximumWidth(700)
+        msg.exec_()
 
     def upd_img(self, img):
-        if hasattr(self, 'view'):
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB); h,w,c = img_rgb.shape
-            self.view.setPixmap(QPixmap.fromImage(QImage(img_rgb.data, w, h, c*w, QImage.Format_RGB888)).scaled(self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        if not hasattr(self, 'view') or img is None or img.size == 0:
+            return
+        try:
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            h, w, c = img_rgb.shape
+            if h < 1 or w < 1:
+                return
+            qimg = QImage(img_rgb.data, w, h, c * w, QImage.Format_RGB888).copy()
+            target = self.view.size()
+            if target.width() < 32 or target.height() < 24:
+                target = QSize(320, 240)
+            pix = QPixmap.fromImage(qimg).scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.view.setPixmap(pix)
+            if not self.is_docker:
+                self._last_frame = img.copy()
+        except Exception:
+            pass
 
 class QSizeGrip(QWidget): 
     def __init__(self, parent): super().__init__(parent); self.setCursor(Qt.SizeFDiagCursor); self.start = None
@@ -526,7 +660,7 @@ class ThemeOps:
             
         return f"""
         QMainWindow {{ background-color: {bg}; }}
-        QWidget {{ font-family: 'Inter', 'Roboto', -apple-system, 'SF Pro Display', sans-serif; color: {txt}; letter-spacing: 0.2px; }}
+        QWidget {{ font-family: -apple-system, 'Segoe UI', 'SF Pro Display', Roboto, sans-serif; color: {txt}; letter-spacing: 0.2px; }}
         QFrame#Sidebar {{ background-color: {sb}; border-right: 1.5px solid {brd}; }}
         QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 12px; }}
         QFrame#ModalBox {{ background-color: {card}; border: 1.2px solid {brd}; border-radius: 16px; }}
@@ -578,6 +712,8 @@ class ThemeOps:
 
 class VisionAnalytics:
     _face_cascade = None
+    _yolo_model = None
+    _yolo_available = None
 
     @classmethod
     def get_face_cascade(cls):
@@ -588,14 +724,45 @@ class VisionAnalytics:
             except: pass
         return cls._face_cascade
 
+    @classmethod
+    def get_yolo(cls):
+        if VisionAnalytics._yolo_available is False:
+            return None
+        if VisionAnalytics._yolo_model is None:
+            try:
+                from ultralytics import YOLO
+                VisionAnalytics._yolo_model = YOLO("yolo11n.pt")
+                VisionAnalytics._yolo_available = True
+            except Exception:
+                VisionAnalytics._yolo_available = False
+                return None
+        return VisionAnalytics._yolo_model
+
     @staticmethod
     def process(frame, engine_type="STANDARD"):
         t = str(engine_type).upper()
-        meta = {"objects": 0}
+        meta = {"objects": 0, "classes": {}}
         
         if t == "YOLOv8":
-            cv2.putText(frame, "ENGINE: YOLOv8 | SCANNING", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 122, 255), 2)
-            cv2.rectangle(frame, (100, 100), (300, 300), (0, 122, 255), 1)
+            model = VisionAnalytics.get_yolo()
+            if model is not None:
+                try:
+                    results = model(frame, conf=0.25, iou=0.45, verbose=False)
+                    if results and len(results) > 0:
+                        r = results[0]
+                        if r.boxes is not None:
+                            meta["objects"] = len(r.boxes)
+                            names = r.names or {}
+                            for cls_id in r.boxes.cls.cpu().int().tolist():
+                                name = names.get(cls_id, "object")
+                                meta["classes"][name] = meta["classes"].get(name, 0) + 1
+                        annotated = r.plot()
+                        if annotated is not None and annotated.size > 0:
+                            frame[:] = annotated
+                except Exception:
+                    meta["objects"] = 0
+            else:
+                cv2.putText(frame, "YOLO: Load model (yolo11n.pt) failed", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 122, 255), 2)
         elif t == "FACE AI":
             cascade = VisionAnalytics.get_face_cascade()
             if cascade and not cascade.empty():
@@ -613,12 +780,22 @@ class VisionAnalytics:
             
         return frame, meta
 
+def _profile_to_size(profile):
+    """PROFILE combo (Auto, 720p, 1080p, 4K) -> (width, height) or None for Auto (no resize)."""
+    if not profile or str(profile).strip().lower() == "auto":
+        return None
+    p = str(profile).strip().upper()
+    if "720" in p: return (1280, 720)
+    if "1080" in p: return (1920, 1080)
+    if "4K" in p or "4k" in p: return (3840, 2160)
+    return None
+
 class VideoThread(QThread):
     change_pixmap = pyqtSignal(np.ndarray)
     analytics_signal = pyqtSignal(dict)
     
-    def __init__(self, src, engine="STANDARD"): 
-        super().__init__(); self.src = src; self.engine = engine
+    def __init__(self, src, engine="STANDARD", target_size=None):
+        super().__init__(); self.src = src; self.engine = engine; self.target_size = target_size
         self.running = True; self.is_recording = False; self.out = None; self.snap_req = False
 
     def toggle_record(self, start=True):
@@ -657,6 +834,9 @@ class VideoThread(QThread):
             if not ret:
                 print(f"[!] Video Engine: Frame drop on {source}"); time.sleep(1)
                 cap.release(); cap = None; continue
+
+            if self.target_size and len(self.target_size) == 2 and frame is not None:
+                frame = cv2.resize(frame, (self.target_size[0], self.target_size[1]), interpolation=cv2.INTER_LINEAR)
 
             # AI & NVR Layer...
             frame, meta = VisionAnalytics.process(frame, self.engine)
@@ -725,7 +905,7 @@ class App(QMainWindow):
         self.init_ui(); self.apply_theme()
         self.stats = StatsThread(); self.stats.updated.connect(self.upd_stats); self.stats.start()
         QTimer.singleShot(300, self.load_data)
-        QTimer.singleShot(800, self.check_docker)
+        # check_docker artık sadece yenile (↻) ile çağrılıyor; açılışta sadece DB'den yükle (çift kart oluşmasın)
         
         # Ensure it fits the screen properly
         self.showMaximized()
@@ -734,9 +914,19 @@ class App(QMainWindow):
         # Load persisted cameras
         for name, src, meta in self.db.get_cameras():
             self.add_cam_logic(name, src, meta, save=False)
-        # Load persisted workspaces
+        # Load persisted workspaces (gerçek Docker durumuna göre Running/Stopped)
+        try:
+            running_ids = set()
+            for c in DockerManager.list_containers():
+                cid = (c.get("id") or "")[:12]
+                if cid and (c.get("status") or "").lower().startswith("up"):
+                    running_ids.add(cid)
+        except Exception:
+            running_ids = set()
         for name, img, cid in self.db.get_workspaces():
-            self.add_docker_card(name, img, cid, save=False)
+            ckey = (cid or "")[:12]
+            running = ckey in running_ids
+            self.add_docker_card(name, img, cid, running=running, save=False)
 
     def init_ui(self):
         sb = QFrame(); sb.setObjectName("Sidebar"); sb.setFixedWidth(240)
@@ -811,7 +1001,13 @@ class App(QMainWindow):
             
             db = QPushButton("×"); db.setFixedSize(28,28); db.setCursor(Qt.PointingHandCursor)
             db.setStyleSheet("QPushButton { color: #555; font-size: 16px; border:none; background:transparent; } QPushButton:hover { color: #EF4444; }")
-            db.clicked.connect(lambda _, p=f: [os.remove(p), self.refresh_library()])
+            def do_remove(path):
+                try:
+                    os.remove(path)
+                    self.refresh_library()
+                except OSError as e:
+                    self.show_toast(f"Could not delete: {e}")
+            db.clicked.connect(lambda _, p=f: do_remove(p))
             
             rl.addWidget(ob); rl.addWidget(db); self.lib_lyout.addWidget(r)
 
@@ -820,7 +1016,7 @@ class App(QMainWindow):
         h = QHBoxLayout(); h.addWidget(QLabel("Broadcasting", styleSheet="font-size: 24px; font-weight: 800; border:none;"))
         self.cam_search = QLineEdit(); self.cam_search.setPlaceholderText("Search cameras..."); self.cam_search.setFixedWidth(200)
         self.cam_search.textChanged.connect(self.filter_cameras); h.addStretch(); h.addWidget(self.cam_search)
-        rb = QPushButton("↻"); rb.setFixedSize(30,30); rb.setStyleSheet("border:1px solid #333; border-radius:15px; background: transparent;"); rb.clicked.connect(self.refresh_ui); h.addWidget(rb); l.addLayout(h); l.addSpacing(25)
+        rb = QPushButton("↻"); rb.setFixedSize(30,30); rb.setStyleSheet("border:1px solid #333; border-radius:15px; background: transparent;"); rb.clicked.connect(self.refresh_cameras); h.addWidget(rb); l.addLayout(h); l.addSpacing(25)
         sa = QScrollArea(); sa.setWidgetResizable(True); sa.setStyleSheet("background: transparent; border: none;")
         self.cam_widget = QWidget(); self.cf = FlowLayout(self.cam_widget); sa.setWidget(self.cam_widget)
         self.abc = self.create_add_btn("New Camera", self.modal_cam); self.cf.addWidget(self.abc); l.addWidget(sa); return w
@@ -865,31 +1061,54 @@ class App(QMainWindow):
             row.addStretch(); row.addWidget(QLabel(val, styleSheet="color:#007AFF; font-size:13px; font-weight:700;")); sl_info.addLayout(row)
 
         add_status("DOCKER ENGINE", "ACTIVE" if DockerManager.is_running() else "OFFLINE")
-        add_status("CAMERA NODES", ", ".join([str(c[1]) for c in list_cameras()]) if list_cameras() else "NONE")
-        add_status("PLATFORM CORE", f"{platform.system()} {platform.machine()}")
+        cameras = list_cameras()
+        add_status("CAMERAS", ", ".join(str(c[1]) for c in cameras) if cameras else "None")
+        add_status("PLATFORM", f"{platform.system()} {platform.machine()}")
         l.addWidget(sys_info)
 
-        # Connectivity Info
-        l.addWidget(QLabel("Connectivity & Integration", styleSheet="font-size: 22px; font-weight: 800; border:none;"))
-        conn_box = QFrame(); conn_box.setObjectName("InfoCard"); cl = QVBoxLayout(conn_box); cl.setContentsMargins(25,25,25,25); cl.setSpacing(15)
-        
-        node_row = QHBoxLayout(); node_row.addWidget(QLabel("REMOTE NODE (IP):", styleSheet="color:#888; font-size:13px; font-weight:700;"))
-        self.node_ip = QLineEdit(); self.node_ip.setPlaceholderText("Localhost (or ZeroTier IP)")
-        self.node_ip.setFixedWidth(200); self.node_ip.setText(os.getenv("JETSON_REMOTE", ""))
-        self.node_ip.textChanged.connect(lambda t: [DockerManager.set_host(t), self.show_toast(f"Switched Node: {t or 'Local'}")])
+        # Network & remote host (English, professional)
+        l.addWidget(QLabel("Network & remote host", styleSheet="font-size: 22px; font-weight: 800; border:none;"))
+        conn_box = QFrame(); conn_box.setObjectName("InfoCard"); cl = QVBoxLayout(conn_box); cl.setContentsMargins(25,25,25,25); cl.setSpacing(18)
+
+        node_row = QHBoxLayout(); node_row.addWidget(QLabel("Remote host (IP):", styleSheet="color:#888; font-size:13px; font-weight:700;"))
+        self.node_ip = QLineEdit(); self.node_ip.setPlaceholderText("e.g. 10.144.1.5")
+        self.node_ip.setFixedWidth(220); self.node_ip.setText(os.getenv("JETSON_REMOTE", ""))
+        self.node_ip.textChanged.connect(lambda t: [DockerManager.set_host(t), self.show_toast(f"Node: {t or 'Local'}"), self._schedule_remote_status_check()])
         node_row.addStretch(); node_row.addWidget(self.node_ip); cl.addLayout(node_row)
 
-        # ZeroTier Auto-Discovery Helper
-        zt_nodes = get_zerotier_nodes()
-        if zt_nodes:
-            zt_row = QHBoxLayout(); zt_row.addWidget(QLabel("DISCOVERED ZT PEERS:", styleSheet="color:#888; font-size:11px; font-weight:700;"))
-            zt_row.addStretch()
-            for node in zt_nodes[:3]:
-                nb = QPushButton(node); nb.setFixedSize(90, 22); nb.setStyleSheet("font-size: 9px; border: 1px solid #333; border-radius: 4px;"); 
-                nb.clicked.connect(lambda _, n=node: self.node_ip.setText(n))
-                zt_row.addWidget(nb)
-            cl.addLayout(zt_row)
-        
+        status_row = QHBoxLayout(); status_row.addWidget(QLabel("Status:", styleSheet="color:#888; font-size:13px; font-weight:700;"))
+        self.remote_node_status_label = QLabel("—"); self.remote_node_status_label.setStyleSheet("font-size:13px; font-weight:700;")
+        status_row.addStretch(); status_row.addWidget(self.remote_node_status_label); cl.addLayout(status_row)
+        self._remote_status_timer = None
+        self._remote_status_thread = None
+
+        # ZeroTier: multiple networks list + device/peer count
+        zt_networks = get_zerotier_networks()
+        peer_count = get_zerotier_peer_count()
+        if zt_networks or peer_count is not None:
+            cl.addWidget(QFrame(styleSheet="background:rgba(128,128,128,0.15); height:1px; border:none;"))
+            net_label = QLabel("ZeroTier networks"); net_label.setStyleSheet("color:#888; font-size:11px; font-weight:700; border:none;")
+            cl.addWidget(net_label)
+            if zt_networks:
+                for net in zt_networks:
+                    nwid = net.get("nwid") or net.get("id") or "—"
+                    name = net.get("name") or nwid[:16]
+                    status = (net.get("status") or "—")
+                    addrs = net.get("assignedAddresses") or []
+                    if not isinstance(addrs, list):
+                        addrs = [addrs] if addrs else []
+                    ip_str = ", ".join(str(a) for a in addrs[:5]) if addrs else "—"
+                    row = QFrame(); row.setStyleSheet("background:rgba(128,128,128,0.04); border-radius:6px; border:none;")
+                    rl = QVBoxLayout(row); rl.setContentsMargins(12,10,12,10); rl.setSpacing(4)
+                    rl.addWidget(QLabel(name, styleSheet="font-size:12px; font-weight:700; border:none;"))
+                    rl.addWidget(QLabel(f"IP(s): {ip_str}  ·  {status}", styleSheet="color:#888; font-size:10px; border:none;"))
+                    cl.addWidget(row)
+            else:
+                cl.addWidget(QLabel("No networks joined.", styleSheet="color:#666; font-size:11px; border:none;"))
+            dev_row = QHBoxLayout(); dev_row.addWidget(QLabel("Peers visible:", styleSheet="color:#888; font-size:11px; font-weight:700;"))
+            dev_row.addStretch(); dev_row.addWidget(QLabel(str(peer_count), styleSheet="font-size:12px; font-weight:700; color:#007AFF;"))
+            cl.addLayout(dev_row)
+
         l.addWidget(conn_box)
 
         l.addWidget(QLabel("Global Preferences", styleSheet="font-size: 22px; font-weight: 800; border:none;"))
@@ -965,29 +1184,98 @@ class App(QMainWindow):
     def show_toast(self, txt):
         t = Toast(txt, self); t.show_msg(self.width()//2 - 120, 50) # Top-Center placement
 
+    def _update_remote_status_label(self, state):
+        """state: None=local, True=online, False=offline"""
+        if not getattr(self, "remote_node_status_label", None):
+            return
+        if state is None:
+            self.remote_node_status_label.setText("Local")
+            self.remote_node_status_label.setStyleSheet("font-size:13px; font-weight:700; color:#888;")
+        elif state:
+            self.remote_node_status_label.setText("Online")
+            self.remote_node_status_label.setStyleSheet("font-size:13px; font-weight:700; color:#30D158;")
+        else:
+            self.remote_node_status_label.setText("Offline")
+            self.remote_node_status_label.setStyleSheet("font-size:13px; font-weight:700; color:#FF453A;")
+
+    def _schedule_remote_status_check(self):
+        if not getattr(self, "_remote_status_timer", None):
+            self._remote_status_timer = QTimer(self)
+            self._remote_status_timer.setSingleShot(True)
+            self._remote_status_timer.timeout.connect(self._run_remote_status_check)
+        self._remote_status_timer.stop()
+        self._remote_status_timer.start(400)
+
+    def _run_remote_status_check(self):
+        host = (self.node_ip.text() or "").strip()
+        if not host:
+            self._update_remote_status_label(None)
+            return
+        if getattr(self, "_remote_status_thread", None) and self._remote_status_thread.isRunning():
+            return
+        self._remote_status_thread = RemoteNodeStatusThread(host)
+        self._remote_status_thread.status_signal.connect(self._on_remote_node_status)
+        self._remote_status_thread.start()
+
+    def _on_remote_node_status(self, online):
+        self._update_remote_status_label(online)
+        host = (self.node_ip.text() or "").strip()
+        if host:
+            QTimer.singleShot(25000, self._run_remote_status_check)
+
     def run_health_check(self):
         results = []
         results.append(f"Docker: {'ONLINE' if DockerManager.is_running() else 'OFFLINE'}")
         results.append(f"Camera Indices: {list_cameras()}")
         results.append(f"Platform: {platform.system()} {platform.machine()}")
-        QMessageBox.information(self, "System Health Report", "\n".join(results))
+        mb = QMessageBox(self)
+        mb.setWindowTitle("System Health Report")
+        mb.setText("\n".join(results))
+        mb.setStyleSheet("QLabel{ min-width: 320px; max-width: 520px; }")
+        for lbl in mb.findChildren(QLabel):
+            lbl.setWordWrap(True)
+        mb.exec_()
 
-    def switch(self, i): self.tabs.setCurrentIndex(i); [btn.setChecked(idx == i) for idx, btn in enumerate(self.navs)]
+    def switch(self, i):
+        self.tabs.setCurrentIndex(i)
+        [btn.setChecked(idx == i) for idx, btn in enumerate(self.navs)]
+        if i == 3:  # Settings sekmesi: uzak düğüm durumunu güncelle
+            self._schedule_remote_status_check()
     def upd_stats(self, d): 
         for i, k in enumerate(['cpu','ram','disk','gpu']): self.charts[i].set_value(d[k])
     def toggle_theme(self, c): self.is_dark = c; self.apply_theme()
     def apply_theme(self): QApplication.instance().setStyleSheet(ThemeOps.get_style(self.is_dark))
     def modal_cam(self): self.show_overlay("Broadcasting Device", self.add_cam_logic)
     def modal_doc(self): self.show_overlay("Workspace Environment", self.add_doc_logic)
+    def refresh_cameras(self):
+        """Yenile: Broadcasting kartlarını DB'den tekrar yükle."""
+        self.active_srcs.clear()
+        for i in reversed(range(self.cf.count())):
+            w = self.cf.itemAt(i).widget()
+            if isinstance(w, ResizableCard):
+                if getattr(w, "t", None): w.t.stop()
+                w.deleteLater()
+        self.cf.removeWidget(self.abc); self.cf.addWidget(self.abc)
+        for name, src, meta in self.db.get_cameras():
+            self.add_cam_logic(name, src, meta, save=False)
+
     def refresh_ui(self):
-        self.active_cids.clear(); self.active_srcs.clear()
+        """Yenile: Workspace kartlarını Docker'dan tekrar yükle."""
+        self.active_cids.clear()
         for i in reversed(range(self.df.count())):
             w = self.df.itemAt(i).widget()
-            if isinstance(w, ResizableCard): w.deleteLater()
+            if isinstance(w, ResizableCard):
+                if getattr(w, "checker", None) and w.checker.isRunning(): w.checker.quit()
+                w.deleteLater()
         self.df.removeWidget(self.abd); self.df.addWidget(self.abd); self.check_docker()
     def check_docker(self):
         if not DockerManager.is_running(): return
-        for c in DockerManager.list_containers(): self.add_docker_card(c['name'], c['image'], c['id'], running=(c['status'].startswith('Up')))
+        for c in DockerManager.list_containers():
+            cid = c['id']
+            saved = self.db.get_workspace_by_cid(cid) if getattr(self, 'db', None) else None
+            name = saved[0] if saved else c['name']
+            img = saved[1] if saved else c['image']
+            self.add_docker_card(name, img, cid, running=(c['status'].startswith('Up')), save=False)
 
     def show_delete_confirmation(self, card):
         ov = QWidget(self); ov.setObjectName("Overlay"); ov.resize(self.size())
@@ -1056,8 +1344,15 @@ class App(QMainWindow):
         cam_label = QLabel("UNIT:"); url_label = QLabel("LINK:")
         ws_label = QLabel("WS:"); exe_label = QLabel("EXE:")
         src_label = QLabel("MANUAL IMAGE TAG:")
+        run_target_label = QLabel("Device:")
+        run_target_label.setToolTip("Choose where to run: this machine (Local) or a remote host (Remote).")
         eng_label = QLabel("ENGINE:"); prof_label = QLabel("PROFILE:")
         ai_setup_label = QLabel("AI SETUP:")
+        zt_cam_label = QLabel("Quick:")
+        zt_cam_btn = QPushButton("Use remote host URL")
+        zt_cam_btn.setToolTip("Fill stream URL with rtsp://<Settings Remote host IP>:554/stream (ZeroTier camera)")
+        zt_cam_btn.setStyleSheet("font-size: 11px; font-weight: 700;")
+        zt_cam_btn.setCursor(Qt.PointingHandCursor)
 
         # Helper: creates a themed, cross-platform-safe QComboBox
         # On Ubuntu/GTK, CSS height constraints alone are insufficient —
@@ -1075,8 +1370,7 @@ class App(QMainWindow):
 
         # Form Area Widgets
         # Always initialize ALL widgets first to avoid UnboundLocalError in all_elements.
-        # Cam-only widgets are set to None when is_cam=False.
-        mode_combo = cam_combo = container_combo = script_input = cat_combo = None
+        mode_combo = cam_combo = container_combo = script_input = cat_combo = run_target_combo = None
 
         if is_cam:
             name_input = QLineEdit(); name_input.setPlaceholderText("Enter a name for this stream (e.g. Garden)")
@@ -1087,10 +1381,22 @@ class App(QMainWindow):
         else:
             name_input = QLineEdit(); name_input.setPlaceholderText("Enter a name for this workspace (e.g. Dev Lab)")
             cat_combo = make_combo(); [cat_combo.addItem(i['name'], i['img']) for i in CatalogManager.get_recommended()[0]]
+            run_target_combo = make_combo(); run_target_combo.addItem("Local", "")
+            remote_ip = getattr(self, "node_ip", None)
+            if remote_ip and getattr(remote_ip, "text", None):
+                ip = remote_ip.text().strip()
+                if ip:
+                    online = check_remote_node_reachable(ip, port=2375, timeout=2)
+                    run_target_combo.addItem(f"Remote ({ip}) • {'Online' if online else 'Offline'}", ip)
 
         # Mode-Specific Fields (only used when is_cam=True)
         cam_combo = make_combo(); [cam_combo.addItem(n, i) for n, i in list_cameras()]
-        url_input = QLineEdit(); url_input.setPlaceholderText("rtsp://admin:123@192.168.1.10/stream")
+        url_input = QLineEdit()
+        _remote_ip = (getattr(self, "node_ip", None) and getattr(self.node_ip, "text", None) and self.node_ip.text().strip()) or ""
+        if _remote_ip:
+            url_input.setPlaceholderText(f"e.g. rtsp://{_remote_ip}:554/stream (ZeroTier camera)")
+        else:
+            url_input.setPlaceholderText("e.g. rtsp://<Remote_IP>:554/stream or rtsp://user:pass@host/stream")
         container_combo = make_combo(); containers = DockerManager.list_containers()
         if containers: [container_combo.addItem(f"{c['name']} ({c['image']})", c['id']) for c in containers]
         else: container_combo.addItem("No active containers", None)
@@ -1132,11 +1438,22 @@ class App(QMainWindow):
         setup_btn = QPushButton("CONFIGURE SCRIPT..."); setup_btn.setObjectName("ShellBtn"); setup_btn.setFixedSize(140, 32); setup_btn.hide()
         setup_btn.clicked.connect(open_custom_setup)
 
+        # ZeroTier camera: fill URL from Settings remote host IP
+        def fill_remote_stream_url():
+            ip = (getattr(self, "node_ip", None) and self.node_ip.text().strip()) or ""
+            if ip:
+                url_input.setText(f"rtsp://{ip}:554/stream")
+                if not name_input.text().strip():
+                    name_input.setText("ZeroTier Camera")
+            else:
+                self.show_toast("Set Remote host (IP) in Settings first.")
+        zt_cam_btn.clicked.connect(fill_remote_stream_url)
+
         # Safeguard all elements from deletion (None values are filtered by the 'if e' guard below)
         all_elements = [name_input, mode_combo, cam_combo, url_input, container_combo, script_input, cin,
                         engine_combo, res_combo, setup_btn, name_label, mode_label, cat_label, cam_label,
                         url_label, ws_label, exe_label, src_label, eng_label, prof_label, ai_setup_label,
-                        cat_combo]
+                        zt_cam_label, zt_cam_btn, cat_combo, run_target_label, run_target_combo]
         
         for e in all_elements: 
             if e: e.setParent(box); e.hide()
@@ -1147,9 +1464,10 @@ class App(QMainWindow):
                 if e: e.hide()
             
             if not is_cam:
-                for x in [name_label, name_input, cat_label, cat_combo, src_label, cin]: x.show()
+                for x in [name_label, name_input, cat_label, cat_combo, run_target_label, run_target_combo, src_label, cin]: x.show()
                 f.addRow(name_label, name_input)
                 f.addRow(cat_label, cat_combo)
+                f.addRow(run_target_label, run_target_combo)
                 f.addRow(src_label, cin)
             else:
                 for x in [name_label, name_input, mode_label, mode_combo, eng_label, engine_combo, prof_label, res_combo]: x.show()
@@ -1159,6 +1477,10 @@ class App(QMainWindow):
                 m = mode_combo.currentIndex()
                 if m == 1: # Prioritize Stream Mode Visibility
                     url_label.show(); url_input.show(); f.addRow(url_label, url_input)
+                    if (getattr(self, "node_ip", None) and self.node_ip.text().strip()):
+                        zt_cam_label.show(); zt_cam_btn.show(); f.addRow(zt_cam_label, zt_cam_btn)
+                    else:
+                        zt_cam_label.hide(); zt_cam_btn.hide()
                 elif m == 0:
                     cam_label.show(); cam_combo.show(); f.addRow(cam_label, cam_combo)
                 elif m == 2:
@@ -1195,12 +1517,21 @@ class App(QMainWindow):
                 val = ""
                 if m == "Physical":
                     val = cam_combo.currentData()
+                    if val is None:
+                        QMessageBox.warning(ov, "Camera", "No camera selected or no cameras found.")
+                        return
                     if not name: name = cam_combo.currentText()
                 elif m == "Stream":
                     val = url_input.text().strip()
+                    if not val:
+                        QMessageBox.warning(ov, "Stream", "Enter a stream URL. Use \"Use remote host URL\" if the camera is on the device set in Settings.")
+                        return
                     if not name: name = f"Stream: {val[:15]}"
                 elif m == "Container":
                     cid = container_combo.currentData(); script = script_input.text().strip()
+                    if not cid:
+                        QMessageBox.warning(ov, "AI Workspace", "No container selected. Create a workspace first or ensure one is running.")
+                        return
                     val = f"docker://{cid}?script={script}"
                     if not name: name = f"AI: {container_combo.currentText().split(' ')[0]}"
                 
@@ -1209,10 +1540,14 @@ class App(QMainWindow):
                     meta += f"|{custom_config['cid']}|{custom_config['script']}"
                 cb(name, val, meta)
             else:
-                val = cin.text().strip() if cin.text() else cat_combo.currentData()
+                val = cin.text().strip() if cin.text() else (cat_combo.currentData() or "")
                 name = name_input.text().strip()
-                if not name: name = cin.text().strip() if cin.text() else cat_combo.currentText()
-                cb(name, val)
+                if not name: name = cin.text().strip() if cin.text() else (cat_combo.currentText() or "Workspace")
+                if not val:
+                    QMessageBox.warning(ov, "Workspace", "Select a template or enter an image tag.")
+                    return
+                run_target = (run_target_combo.currentData() or "") if (run_target_combo and not is_cam) else ""
+                cb(name, val, run_target)
             ov.deleteLater()
             
         b2.clicked.connect(confirm); h.addWidget(b1); h.addWidget(b2); bl.addLayout(h); l.addWidget(box); ov.show()
@@ -1229,45 +1564,73 @@ class App(QMainWindow):
             card.view.setText("AI Engine Initializing...")
         elif src is not None:
             engine = "STANDARD"
+            target_size = None
             if meta and "|" in meta:
                 parts = meta.split("|")
                 engine = parts[1]
+                if len(parts) >= 3:
+                    target_size = _profile_to_size(parts[2])
                 if engine == "CUSTOM WORKSPACE" and len(parts) >= 5:
-                    # Logic to trigger workspace script can be added here
                     card.view.setText(f"CUSTOM AI: {parts[4].split('/')[-1]}")
 
-            t = VideoThread(src, engine); t.change_pixmap.connect(card.upd_img)
+            t = VideoThread(src, engine, target_size=target_size); t.change_pixmap.connect(card.upd_img)
             t.analytics_signal.connect(card.update_ai_ui)
             t.start(); card.t = t 
         else:
             card.view.setText("No Source Signal")
 
-    def add_doc_logic(self, name, img):
+    def _docker_safe_name(self, name):
+        """User-provided name -> valid Docker container name ( [a-zA-Z0-9_.-], max 63 chars )."""
+        if not (name or "").strip():
+            return f"jetson_{''.join(random.choices(string.ascii_lowercase, k=5))}"
+        s = re.sub(r"[^a-zA-Z0-9_.-]", "_", (name or "").strip())
+        s = s.strip("_") or "workspace"
+        return s[:63] if len(s) > 63 else s
+
+    def add_doc_logic(self, name, img, target=None):
         if not img: return
-        cn = f"jetson_{''.join(random.choices(string.ascii_lowercase,k=5))}"
+        cn = self._docker_safe_name(name)
         card = ResizableCard(cn, img, True); card.trigger_delete_modal.connect(self.show_delete_confirmation); card.removed.connect(card.deleteLater); card.set_status_info("Pulling", "#0A84FF")
         card.db = self.db
         self.df.removeWidget(self.abd); self.df.addWidget(card); self.df.addWidget(self.abd)
-        
-        # Enterprise Persistency Layer: Map local host directory to Docker environment
-        ws_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspaces"))
-        ws_dir = os.path.join(ws_base, cn); os.makedirs(ws_dir, exist_ok=True)
-        
-        run_cmd = f"docker run -d --name {cn} --restart unless-stopped -v \"{ws_dir}:/workspace\" -w /workspace {img} sleep infinity"
+        use_remote = target and str(target).strip()
+        if use_remote:
+            run_cmd = DockerManager.get_cmd(f"run -d --name {cn} --restart unless-stopped -w /workspace {img} sleep infinity", host_override=target)
+        else:
+            ws_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspaces"))
+            ws_dir = os.path.join(ws_base, cn); os.makedirs(ws_dir, exist_ok=True)
+            run_cmd = DockerManager.get_cmd(f"run -d --name {cn} --restart unless-stopped -v \"{ws_dir}:/workspace\" -w /workspace {img} sleep infinity", host_override=target or "")
         card.w = DockerCreationThread(run_cmd)
         def on_created(o, s):
             if s:
-                card.container_id = o; card.set_status_info("Active","#30D158"); card.start_monitoring()
+                card.container_id = o; card.set_status_info("Running","#30D158"); card.start_monitoring()
                 self.db.save_workspace(cn, img, o)
-            else: card.set_status_info("Error","#FF453A")
+            else:
+                card.set_status_info("Error","#FF453A")
+                msg = str(o).strip() if o else ""
+                if "connection refused" in msg.lower() or "cannot connect" in msg.lower():
+                    short = "Host unreachable. Is Docker running on the selected device?"
+                elif "no such image" in msg.lower():
+                    short = "Image not found on target. Pull it there first."
+                elif msg:
+                    short = msg[:100] + ("..." if len(msg) > 100 else "")
+                else:
+                    short = "Container creation failed."
+                QMessageBox.warning(self, "Workspace", short)
         card.w.result.connect(on_created); card.w.start()
 
+    def _norm_cid(self, cid):
+        """Kısa/tam container id tutarlı eşleşme için (docker bazen 12, bazen 64 karakter döner)."""
+        return (cid or "")[:12] if (cid or "") else ""
+
     def add_docker_card(self, n, i, c, running=True, save=True):
-        if c is None or c == "" or c in self.active_cids: return
-        self.active_cids.add(c)
-        card = ResizableCard(n, i, True, c); card.trigger_delete_modal.connect(self.show_delete_confirmation); card.removed.connect(lambda: [self.active_cids.remove(c) if c in self.active_cids else None, card.deleteLater()])
+        if c is None or c == "": return
+        ckey = self._norm_cid(c)
+        if ckey and ckey in self.active_cids: return
+        if ckey: self.active_cids.add(ckey)
+        card = ResizableCard(n, i, True, c); card.trigger_delete_modal.connect(self.show_delete_confirmation); card.removed.connect(lambda: [self.active_cids.discard(self._norm_cid(c)), card.deleteLater()])
         card.db = self.db
-        card.set_status_info("Active" if running else "Static", "#30D158" if running else "#FF453A")
+        card.set_status_info("Running" if running else "Stopped", "#30D158" if running else "#FF453A")
         if running: card.start_monitoring()
         self.df.removeWidget(self.abd); self.df.addWidget(card); self.df.addWidget(self.abd)
         if save: self.db.save_workspace(n, i, c)
