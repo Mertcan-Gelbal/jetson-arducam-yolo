@@ -4523,9 +4523,18 @@ class App(QMainWindow):
                 w.deleteLater()
         self.df.removeWidget(self.abd); self.df.addWidget(self.abd); self.check_docker()
     def check_docker(self):
-        if not DockerManager.is_running(): return
+        """
+        Refresh workspace cards from current Docker host.
+
+        Conflict guard:
+        - Docker returns 12-char IDs in some commands and 64-char in others.
+          We normalize before DB lookup to avoid duplicate/ghost cards.
+        """
+        if not DockerManager.is_running():
+            return
         for c in DockerManager.list_containers():
-            cid = c['id']
+            cid_raw = c['id']
+            cid = self._norm_cid(cid_raw)
             saved = self.db.get_workspace_by_cid(cid) if getattr(self, 'db', None) else None
             name = saved[0] if saved else c['name']
             img = saved[1] if saved else c['image']
@@ -4867,6 +4876,16 @@ class App(QMainWindow):
                     QMessageBox.warning(ov, "Workspace", "Select a template or enter an image tag.")
                     return
                 run_target = (run_target_combo.currentData() or "") if (run_target_combo and not is_cam) else ""
+                # Remote Docker selection can change while modal is open; guard stale/offline host.
+                if run_target:
+                    if not check_remote_node_reachable(run_target, port=2375, timeout=2):
+                        QMessageBox.warning(
+                            ov,
+                            "Remote Docker",
+                            f"Selected remote host {run_target}:2375 is not reachable.\n"
+                            "Check ZeroTier connectivity and Docker daemon exposure, then try again."
+                        )
+                        return
                 cb(name, val, run_target)
             ov.deleteLater()
             
@@ -4965,8 +4984,10 @@ class App(QMainWindow):
         card.w = DockerCreationThread(run_cmd)
         def on_created(o, s):
             if s:
-                card.container_id = o; card.set_status_info("Running","#30D158"); card.start_monitoring()
-                self.db.save_workspace(cn, img, o)
+                cid_norm = self._norm_cid(o)
+                card.container_id = cid_norm
+                card.set_status_info("Running","#30D158"); card.start_monitoring()
+                self.db.save_workspace(cn, img, cid_norm)
             else:
                 card.set_status_info("Error","#FF453A")
                 raw = str(o).strip() if o else ""
