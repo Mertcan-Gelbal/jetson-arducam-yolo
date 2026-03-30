@@ -3679,7 +3679,29 @@ class App(QMainWindow):
             row.addWidget(vl)
             sl_info.addLayout(row)
 
-        add_status("Docker engine", "ACTIVE" if DockerManager.is_running() else "OFFLINE")
+        # Dynamic Docker status row — color-coded + "Start Docker" button when offline
+        _docker_running = DockerManager.is_running()
+        _docker_row = QHBoxLayout()
+        _docker_lbl = QLabel("Docker engine"); _docker_lbl.setObjectName("FormLabel")
+        _docker_row.addWidget(_docker_lbl); _docker_row.addStretch()
+        self._docker_status_lbl = QLabel("ACTIVE" if _docker_running else "OFFLINE")
+        self._docker_status_lbl.setStyleSheet(
+            f"color: {'#30D158' if _docker_running else '#FF453A'}; font-size: 13px; font-weight: 700; border: none;"
+        )
+        _docker_row.addWidget(self._docker_status_lbl)
+        self._docker_start_btn = QPushButton("Start Docker")
+        self._docker_start_btn.setObjectName("RowGhost")
+        self._docker_start_btn.setFixedHeight(28)
+        self._docker_start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._docker_start_btn.setToolTip("Launch Docker Desktop / daemon on this machine")
+        self._docker_start_btn.setVisible(not _docker_running)
+        def _start_docker_clicked():
+            DockerManager.start_service()
+            self.show_toast("Starting Docker…")
+            QTimer.singleShot(4500, self._refresh_docker_status)
+        self._docker_start_btn.clicked.connect(_start_docker_clicked)
+        _docker_row.addWidget(self._docker_start_btn)
+        sl_info.addLayout(_docker_row)
         cameras = list_cameras()
         add_status("Cameras", ", ".join(str(c[1]) for c in cameras) if cameras else "None")
         add_status("Platform", f"{platform.system()} {platform.machine()}")
@@ -3729,6 +3751,35 @@ class App(QMainWindow):
         status_row.addStretch(); status_row.addWidget(self.remote_node_status_label); cl.addLayout(status_row)
         self._remote_status_timer = None
         self._remote_status_thread = None
+
+        # Remote Docker setup guide — how to expose port 2375 on Jetson
+        cl.addWidget(hairline())
+        rdg = QFrame(); rdg.setObjectName("SettingsInset")
+        rdg_l = QVBoxLayout(rdg); rdg_l.setContentsMargins(16, 14, 16, 14); rdg_l.setSpacing(8)
+        rdg_title = QLabel("Remote Docker — Jetson setup"); rdg_title.setObjectName("FormLabel")
+        rdg_l.addWidget(rdg_title)
+        rdg_hint = QLabel(
+            "Run on Jetson to expose the Docker API on port 2375 (ZeroTier network). "
+            "Then enter the Jetson ZeroTier IP above as Remote host."
+        )
+        rdg_hint.setObjectName("CaptionMuted"); rdg_hint.setWordWrap(True)
+        rdg_l.addWidget(rdg_hint)
+        _daemon_json = '{"hosts":["unix:///var/run/docker.sock","tcp://0.0.0.0:2375"]}'
+        _daemon_cmd = (
+            f"echo '{_daemon_json}' | sudo tee /etc/docker/daemon.json "
+            "&& sudo systemctl restart docker"
+        )
+        rdg_cmd_lbl = QLabel(_daemon_cmd)
+        rdg_cmd_lbl.setObjectName("MonoMuted"); rdg_cmd_lbl.setWordWrap(True)
+        rdg_cmd_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        rdg_l.addWidget(rdg_cmd_lbl)
+        _copy_rdg_btn = QPushButton("Copy command"); _copy_rdg_btn.setObjectName("RowGhost")
+        _copy_rdg_btn.setFixedHeight(28); _copy_rdg_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _copy_rdg_btn.clicked.connect(
+            lambda: [QApplication.clipboard().setText(_daemon_cmd), self.show_toast("Command copied")]
+        )
+        rdg_l.addWidget(_copy_rdg_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        cl.addWidget(rdg)
 
         # ZeroTier: multiple networks list + device/peer count
         zt_networks = get_zerotier_networks()
@@ -4310,6 +4361,21 @@ class App(QMainWindow):
         if getattr(self, "node_ip", None):
             save_app_prefs_remote_host(self.node_ip.text() or "")
 
+    def _refresh_docker_status(self):
+        """Refresh the Docker engine status label and Start button in Settings."""
+        lbl = getattr(self, "_docker_status_lbl", None)
+        btn = getattr(self, "_docker_start_btn", None)
+        if lbl is None:
+            return
+        running = DockerManager.is_running()
+        lbl.setText("ACTIVE" if running else "OFFLINE")
+        color = "#30D158" if running else "#FF453A"
+        lbl.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 700; border: none;")
+        if btn is not None:
+            btn.setVisible(not running)
+        if running:
+            self.show_toast("Docker is running")
+
     def run_health_check(self):
         results = []
         results.append(f"Docker: {'ONLINE' if DockerManager.is_running() else 'OFFLINE'}")
@@ -4328,8 +4394,9 @@ class App(QMainWindow):
         [btn.setChecked(idx == i) for idx, btn in enumerate(self.navs)]
         if i == 3:
             QTimer.singleShot(0, getattr(self, "refresh_library", lambda: None))
-        if i == 4:  # Settings tab: refresh remote node status
+        if i == 4:  # Settings tab: refresh remote node status + Docker status
             self._schedule_remote_status_check()
+            QTimer.singleShot(0, self._refresh_docker_status)
     def upd_stats(self, d): 
         for i, k in enumerate(['cpu','ram','disk','gpu']): self.charts[i].set_value(d[k])
     def toggle_theme(self, c): self.is_dark = c; self.apply_theme()
