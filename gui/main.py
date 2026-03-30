@@ -90,7 +90,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QFrame,
     QScrollArea, QGridLayout, QComboBox, QFileDialog, 
-    QGraphicsDropShadowEffect, QAbstractButton, QSizePolicy, QFormLayout, QLayout,
+    QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractButton, QSizePolicy, QFormLayout, QLayout,
     QGraphicsBlurEffect, QMenu, QTabWidget, QLineEdit, QPlainTextEdit, QMessageBox,
     QSlider, QListView, QSpinBox, QDialog, QDialogButtonBox, QStyle,
 )
@@ -848,12 +848,14 @@ class Toast(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         pal = ThemeOps.palette(is_dark)
+        accent = "#0A84FF" if is_dark else "#007AFF"
         self.setStyleSheet(
             f"""
             QWidget#Toast {{
                 background-color: {pal['toast_scrim']};
                 border: 1px solid {pal['pop_edge']};
-                border-radius: 12px;
+                border-radius: 14px;
+                border-left: 3px solid {accent};
             }}
             QLabel#ToastText {{
                 color: {pal['txt']};
@@ -861,7 +863,7 @@ class Toast(QWidget):
                 font-weight: 600;
                 border: none;
                 background: transparent;
-                padding: 10px 22px;
+                padding: 12px 24px 12px 20px;
             }}
             """
         )
@@ -870,27 +872,180 @@ class Toast(QWidget):
         self.lbl = QLabel(text)
         self.lbl.setObjectName("ToastText")
         self.lbl.setWordWrap(True)
-        self.lbl.setMaximumWidth(420)
+        self.lbl.setMaximumWidth(440)
         l.addWidget(self.lbl)
-        
-        # Fade out animation
+
+        # Fade-in animation
+        self._fade_in = QPropertyAnimation(self, b"windowOpacity")
+        self._fade_in.setDuration(220)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        # Slide-up animation
+        self._slide = QPropertyAnimation(self, b"pos")
+        self._slide.setDuration(280)
+        self._slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        # Fade-out animation
         self.anim = QPropertyAnimation(self, b"windowOpacity")
-        self.anim.setDuration(800)
+        self.anim.setDuration(600)
         self.anim.setStartValue(1.0)
         self.anim.setEndValue(0.0)
+        self.anim.setEasingCurve(QEasingCurve.Type.InCubic)
         self.anim.finished.connect(self.hide)
-        
-        self.timer = QTimer(); self.timer.timeout.connect(self.anim.start); self.timer.start(2500)
-    def show_msg(self, x, y): self.move(x, y); self.setWindowOpacity(1.0); self.show()
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.anim.start)
+        self.timer.start(2800)
+
+    def show_msg(self, x, y):
+        self.move(x, y + 20)
+        self.setWindowOpacity(0.0)
+        self.show()
+        self._fade_in.start()
+        self._slide.setStartValue(QPoint(x, y + 20))
+        self._slide.setEndValue(QPoint(x, y))
+        self._slide.start()
+
+class FadeStackedWidget(QStackedWidget):
+    """QStackedWidget with smooth 160ms fade-out / 220ms fade-in page transitions."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._animating = False
+        self._pending_index = -1
+        self._anim_out = None
+        self._anim_in = None
+
+    def setCurrentIndex(self, index):
+        if index == self.currentIndex():
+            return
+        if self._animating:
+            self._pending_index = index
+            return
+        current = self.currentWidget()
+        if current is None:
+            super().setCurrentIndex(index)
+            return
+        self._animating = True
+        self._pending_index = -1
+        eff = QGraphicsOpacityEffect(current)
+        current.setGraphicsEffect(eff)
+        anim_out = QPropertyAnimation(eff, b"opacity", self)
+        anim_out.setDuration(160)
+        anim_out.setStartValue(1.0)
+        anim_out.setEndValue(0.0)
+        anim_out.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim_out = anim_out
+
+        def _on_out():
+            current.setGraphicsEffect(None)
+            super(FadeStackedWidget, self).setCurrentIndex(index)
+            nw = self.currentWidget()
+            if nw is None:
+                self._animating = False
+                self._flush_pending()
+                return
+            eff2 = QGraphicsOpacityEffect(nw)
+            nw.setGraphicsEffect(eff2)
+            anim_in = QPropertyAnimation(eff2, b"opacity", self)
+            anim_in.setDuration(220)
+            anim_in.setStartValue(0.0)
+            anim_in.setEndValue(1.0)
+            anim_in.setEasingCurve(QEasingCurve.Type.InCubic)
+            self._anim_in = anim_in
+
+            def _on_in():
+                nw.setGraphicsEffect(None)
+                self._animating = False
+                self._flush_pending()
+
+            anim_in.finished.connect(_on_in)
+            anim_in.start()
+
+        anim_out.finished.connect(_on_out)
+        anim_out.start()
+
+    def _flush_pending(self):
+        if self._pending_index >= 0:
+            idx = self._pending_index
+            self._pending_index = -1
+            self.setCurrentIndex(idx)
+
+
+class LoadingSpinner(QWidget):
+    """Smooth rotating arc spinner — use start()/stop() to show/hide."""
+
+    def __init__(self, size=32, color="#007AFF", parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.setInterval(16)  # ~60 fps
+        self.setFixedSize(size, size)
+        self.hide()
+
+    def start(self):
+        self._angle = 0
+        self._timer.start()
+        self.show()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self):
+        self._angle = (self._angle + 6) % 360
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        sz = min(self.width(), self.height()) - 4
+        rect = QRect((self.width() - sz) // 2, (self.height() - sz) // 2, sz, sz)
+        # Track ring
+        track = QColor(self._color)
+        track.setAlpha(38)
+        p.setPen(QPen(track, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(rect, 0, 360 * 16)
+        # Spinner arc
+        p.setPen(QPen(self._color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(rect, (90 - self._angle) * 16, -270 * 16)
+
 
 class DonutChart(QWidget):
     def __init__(self, title, color_hex, parent=None):
         super().__init__(parent)
-        self.title = title; self.base_color = QColor(color_hex); self.percent = 0; self.setFixedSize(160, 180)
-    def set_value(self, p): self.percent = p; self.update()
+        self.title = title
+        self.base_color = QColor(color_hex)
+        self._percent = 0
+        self._anim_val = 0.0
+        self.setFixedSize(160, 180)
+        self._anim = QPropertyAnimation(self, b"animVal")
+        self._anim.setDuration(700)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    @Property(float)
+    def animVal(self):
+        return self._anim_val
+
+    @animVal.setter
+    def animVal(self, v):
+        self._anim_val = v
+        self.update()
+
+    def set_value(self, p):
+        self._percent = p
+        self._anim.stop()
+        self._anim.setStartValue(self._anim_val)
+        self._anim.setEndValue(float(p))
+        self._anim.start()
     def paintEvent(self, e):
-        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRect((self.width()//2)-50, (self.height()-20)//2-50, 100, 100)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRect((self.width() // 2) - 50, (self.height() - 20) // 2 - 50, 100, 100)
         wnd = self.window()
         dark = getattr(wnd, "is_dark", True) if wnd is not None else True
         pal = ThemeOps.palette(dark)
@@ -898,17 +1053,21 @@ class DonutChart(QWidget):
         track.setAlpha(52 if dark else 64)
         p.setPen(QPen(track, 10, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawArc(rect, 0, 360 * 16)
-        if self.percent > 0:
-            p.setPen(QPen(self.base_color, 12, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(rect, 90 * 16, int(-self.percent * 3.6 * 16))
+        val = self._anim_val
+        if val > 0:
+            # Gradient arc color based on value
+            arc_color = QColor(self.base_color)
+            p.setPen(QPen(arc_color, 12, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(rect, 90 * 16, int(-val * 3.6 * 16))
         txt_color = self.palette().text().color()
         p.setPen(txt_color)
         f = QFont(self.font())
         f.setPointSize(22)
         f.setWeight(QFont.Weight.Bold)
         p.setFont(f)
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{int(self.percent)}%")
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{int(val)}%")
         f.setPointSize(11)
+        f.setWeight(QFont.Weight.Normal)
         p.setFont(f)
         p.drawText(0, self.height() - 25, self.width(), 20, Qt.AlignmentFlag.AlignCenter, self.title)
 
@@ -1598,6 +1757,7 @@ class ThemeOps:
         accent_net = p["accent_net"]
         nav_idle = "#B4BDD4" if is_dark else "#4A5568"
         search_ring = "rgba(130, 165, 230, 0.42)" if is_dark else "rgba(40, 70, 130, 0.28)"
+        card_hover_brd = "rgba(10, 132, 255, 0.55)" if is_dark else "rgba(0, 100, 220, 0.45)"
         if is_dark:
             sb_m_txt, sb_m_br, sb_m_bg = "#D4C4FD", "rgba(167, 139, 250, 0.42)", "rgba(139, 92, 246, 0.12)"
             sb_e_txt, sb_e_br, sb_e_bg = "#7DD3FC", "rgba(56, 189, 248, 0.45)", "rgba(10, 132, 255, 0.12)"
@@ -1617,10 +1777,12 @@ class ThemeOps:
         QWidget#MainCanvas {{ background-color: {canvas}; }}
         QFrame#Sidebar {{ background-color: {sb}; border-right: 1px solid {brd}; }}
         QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 2px solid {pop_edge}; border-radius: 18px; }}
+        QFrame#Card:hover, QFrame#InfoCard:hover {{ border-color: {card_hover_brd}; }}
         QFrame#ModalBox {{ background-color: {card}; border: 2px solid {pop_edge}; border-radius: 16px; }}
         QFrame#CardHeader {{ background-color: {card_header_bg}; border-top-left-radius: 14px; border-top-right-radius: 14px; border-bottom: 1px solid {pop_edge}; }}
         QFrame#MetaPanel {{ background-color: {meta_panel_bg}; border: 1px solid {pop_edge}; border-radius: 12px; }}
         QFrame#MediaCard {{ background-color: {surface_row}; border: 2px solid {pop_edge}; border-radius: 20px; }}
+        QFrame#MediaCard:hover {{ border-color: {card_hover_brd}; }}
         QLabel#MediaThumb {{ background-color: {preview_bg}; border: 1px solid {pop_edge}; border-radius: 14px; color: {sub}; }}
         QLabel#MediaThumbPlaceholder {{
             background-color: {meta_panel_bg}; border: 2px dashed {pop_edge}; border-radius: 14px; color: {sub};
@@ -1642,6 +1804,7 @@ class ThemeOps:
             background-color: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.35); color: #EF4444; font-weight: bold;
         }}
         QFrame#SurfaceRow {{ background-color: {surface_row}; border-radius: 14px; border: none; }}
+        QFrame#SurfaceRow:hover {{ background-color: {ihov}; }}
         QFrame#SurfaceRowCompact {{ background-color: {surface_row_compact}; border-radius: 12px; border: none; }}
         QFrame#Hairline {{ background-color: {hairline}; border: none; max-height: 1px; min-height: 1px; }}
         QFrame#FocusPopupRoot {{
@@ -1729,7 +1892,9 @@ class ThemeOps:
         QFrame#ContextMenuPanel {{ background-color: {ctx_menu_bg}; border: 2px solid {pop_edge}; border-radius: 14px; }}
         QFrame#NetworkInset {{ background-color: {zt_inset}; border: 2px solid {pop_edge}; border-radius: 14px; }}
         QFrame#PeerListRow {{ background-color: {surface_row}; border: 1px solid {pop_edge}; border-radius: 10px; min-height: 52px; }}
+        QFrame#PeerListRow:hover {{ border-color: {card_hover_brd}; background-color: {ihov}; }}
         QFrame#ZerotierNetRow {{ background-color: {surface_row}; border: 1px solid {pop_edge}; border-radius: 10px; }}
+        QFrame#ZerotierNetRow:hover {{ border-color: {card_hover_brd}; background-color: {ihov}; }}
         QLabel#NetworkPanelHeading {{ color: {txt}; font-size: 13px; font-weight: 800; letter-spacing: 0.06em; border: none; background: transparent; padding: 2px 0 6px 0; }}
         QLabel#PeerStatusDotOn {{ min-width: 10px; max-width: 10px; min-height: 10px; max-height: 10px; border-radius: 5px; background-color: #30D158; border: 1px solid #1F9E45; }}
         QLabel#PeerStatusDotOff {{ min-width: 10px; max-width: 10px; min-height: 10px; max-height: 10px; border-radius: 5px; background-color: #5C6578; border: 1px solid #3D4558; }}
@@ -1781,7 +1946,7 @@ class ThemeOps:
         }}
         QLineEdit, QComboBox, QSpinBox {{ background-color: {ibg}; border: 2px solid {pop_edge}; border-radius: 12px; padding: 10px 16px; color: {txt}; font-size: 14px; font-weight: 500; min-height: 40px; }}
         QSpinBox::up-button, QSpinBox::down-button {{ width: 24px; border: none; background: transparent; }}
-        QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color: #007AFF; background-color: rgba(0,122,255,0.06); }}
+        QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color: #007AFF; border-width: 2px; background-color: rgba(0,122,255,0.08); }}
         QFrame#SearchShell {{
             background-color: {ibg};
             border: 2px solid {search_ring};
@@ -1839,8 +2004,8 @@ class ThemeOps:
         QSlider::handle:horizontal {{ width: 20px; height: 20px; margin: -7px 0; background: #007AFF; border-radius: 10px; border: 2px solid {card}; }}
         QSlider::sub-page:horizontal {{ background: #007AFF; border-radius: 4px; height: 6px; }}
         QPushButton#NavTab {{ border: none; border-radius: 12px; text-align: left; padding: 14px 20px; color: {nav_idle}; font-weight: 600; font-size: 14px; letter-spacing: 0.15px; min-height: 48px; }}
-        QPushButton#NavTab:checked {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #0A84FF, stop:1 #0058D0); color: white; border: 2px solid rgba(255,255,255,0.28); font-weight: 800; }}
-        QPushButton#NavTab:hover:!checked {{ background-color: {hov}; color: {txt}; }}
+        QPushButton#NavTab:checked {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #0A84FF, stop:1 #0058D0); color: white; border: 2px solid rgba(255,255,255,0.28); border-left: 4px solid rgba(255,255,255,0.80); font-weight: 800; }}
+        QPushButton#NavTab:hover:!checked {{ background-color: {hov}; color: {txt}; border: 1px solid {pop_edge}; }}
         QPushButton#IconRefresh {{
             min-width: 42px; max-width: 42px; min-height: 42px; max-height: 42px;
             border-radius: 21px; border: 2px solid {pop_edge}; background-color: {hov}; color: {txt};
@@ -2548,7 +2713,7 @@ class App(QMainWindow):
         sl.addLayout(l_box)
         
         self.eco_mode = False
-        self.tabs = QStackedWidget(); self.navs = []
+        self.tabs = FadeStackedWidget(); self.navs = []
         # Order: Cameras, Workspaces, Devices (next), Library, Settings
         nav_names = ["Cameras", "Workspaces", "Devices", "Library", "Settings"]
         for i, t in enumerate(nav_names):
@@ -4077,7 +4242,13 @@ class App(QMainWindow):
         
     def show_toast(self, txt):
         t = Toast(txt, self, self.is_dark)
-        t.show_msg(max(24, self.width() // 2 - 140), 56)
+        t.adjustSize()
+        tw = t.sizeHint().width() or 280
+        # Bottom-center of the main window, 80px above the bottom edge
+        local_x = max(24, (self.width() - tw) // 2)
+        local_y = self.height() - 90
+        gp = self.mapToGlobal(QPoint(local_x, local_y))
+        t.show_msg(gp.x(), gp.y())
 
     def _update_remote_status_label(self, state):
         """state: None=local, True=online, False=offline"""
