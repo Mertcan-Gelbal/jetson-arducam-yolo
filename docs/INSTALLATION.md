@@ -269,8 +269,8 @@ sudo usermod -aG docker $USER
 cd ~/Documents
 
 # Clone the repository
-git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git
-cd jetson-arducam-yolo
+git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git visiondock
+cd visiondock
 ```
 
 ### 2. Review Dockerfile

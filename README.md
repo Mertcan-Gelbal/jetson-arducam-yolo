@@ -15,8 +15,8 @@ The core of the VisionDock deployment is the `install.sh` script. This modular i
 
 ```bash
 # Clone the repository
-git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo
-cd jetson-arducam-yolo
+git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo visiondock
+cd visiondock
 
 # Run the master installer
 chmod +x install.sh

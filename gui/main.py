@@ -1307,6 +1307,10 @@ class ResizableCard(QFrame):
         if purge_image and is_production_mode():
             log.info("Production mode: skipping base image purge")
             purge_image = False
+        # Stop recording timer before destroying card
+        rt = getattr(self, "_rec_timer", None)
+        if rt is not None and rt.isActive():
+            rt.stop()
         if hasattr(self, "t") and getattr(self, "t", None):
             self.t.stop()
         ck = getattr(self, "checker", None)
