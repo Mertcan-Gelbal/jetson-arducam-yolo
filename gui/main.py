@@ -1157,7 +1157,9 @@ class ResizableCard(QFrame):
         if not is_docker:
             self.rec_badge = QLabel("REC"); self.rec_badge.setObjectName("RecBadgeChip")
             self.rec_badge.hide(); hl.addWidget(self.rec_badge)
-        
+            self.fps_lbl = QLabel(""); self.fps_lbl.setObjectName("FpsLabel")
+            self.fps_lbl.setFixedWidth(54); hl.addWidget(self.fps_lbl)
+
         hl.addStretch()
         
         if is_docker:
@@ -1342,8 +1344,26 @@ class ResizableCard(QFrame):
     def toggle_recording(self, checked):
         if hasattr(self, 't'):
             self.t.toggle_record(checked)
-            if checked: self.rec_badge.show()
-            else: self.rec_badge.hide()
+            if checked:
+                self.rec_badge.show()
+                self._rec_start_time = time.monotonic()
+                if not hasattr(self, '_rec_timer'):
+                    self._rec_timer = QTimer(self)
+                    self._rec_timer.timeout.connect(self._update_rec_time)
+                self._rec_timer.start(1000)
+                if hasattr(self, '_video_well'):
+                    self._video_well.setObjectName("VideoWellRecording")
+                    self._video_well.style().unpolish(self._video_well)
+                    self._video_well.style().polish(self._video_well)
+            else:
+                self.rec_badge.hide()
+                if hasattr(self, '_rec_timer'):
+                    self._rec_timer.stop()
+                self.rec_btn.setText("REC")
+                if hasattr(self, '_video_well'):
+                    self._video_well.setObjectName("VideoWell")
+                    self._video_well.style().unpolish(self._video_well)
+                    self._video_well.style().polish(self._video_well)
 
     def update_ai_ui(self, meta):
         if not hasattr(self, 'ai_meta'):
@@ -1366,6 +1386,39 @@ class ResizableCard(QFrame):
             except Exception:
                 pass
         self._toast_detection_prev = count
+
+    def _update_rec_time(self):
+        if not hasattr(self, '_rec_start_time'):
+            return
+        elapsed = int(time.monotonic() - self._rec_start_time)
+        m, s = divmod(elapsed, 60)
+        self.rec_btn.setText(f"● {m:02d}:{s:02d}")
+
+    def update_fps(self, fps):
+        lbl = getattr(self, "fps_lbl", None)
+        if lbl is None:
+            return
+        lbl.setText(f"{fps:.0f} FPS")
+
+    def update_connection_status(self, status):
+        colors = {
+            "connecting":   ("#FF9F0A", "CONNECTING"),
+            "connected":    ("#30D158", "LIVE"),
+            "reconnecting": ("#FF9F0A", "RECONNECTING"),
+        }
+        color, text = colors.get(status, ("#8E8E93", status.upper()))
+        self.set_status_info(text, color)
+
+    def on_snap_done(self, path):
+        app = self.window()
+        if app and hasattr(app, "show_toast"):
+            app.show_toast(f"Snapshot: {os.path.basename(path)}")
+        btn = getattr(self, "snap_btn", None)
+        if btn:
+            orig_text = btn.text()
+            btn.setText("✓ Saved")
+            btn.setStyleSheet("color: #30D158; font-weight: 800;")
+            QTimer.singleShot(1500, lambda: [btn.setText(orig_text), btn.setStyleSheet("")])
 
     def take_snapshot(self):
         if hasattr(self, 't'): self.t.snapshot()
@@ -1797,6 +1850,20 @@ class ThemeOps:
             border: 2px solid {pop_edge};
             border-radius: 18px;
         }}
+        QFrame#VideoWellRecording {{
+            background-color: {meta_panel_bg};
+            border: 2px solid rgba(239, 68, 68, 0.70);
+            border-radius: 18px;
+        }}
+        QLabel#FpsLabel {{
+            color: {sub};
+            font-size: 9px;
+            font-weight: 800;
+            letter-spacing: 0.3px;
+            border: none;
+            background: transparent;
+            min-width: 48px;
+        }}
         QPushButton#ModalToggleCheck {{
             background-color: {meta_panel_bg}; border: 1px solid {brd}; border-radius: 12px; padding: 12px; font-size: 11px; text-align: left; color: {txt};
         }}
@@ -1922,10 +1989,13 @@ class ThemeOps:
         QLabel#StreamBadgeMode {{ color: {sb_m_txt}; font-size: 10px; font-weight: 800; padding: 5px 10px; border-radius: 8px; border: 1px solid {sb_m_br}; letter-spacing: 0.35px; background-color: {sb_m_bg}; }}
         QLabel#StreamBadgeEngine {{ color: {sb_e_txt}; font-size: 10px; font-weight: 800; padding: 5px 10px; border-radius: 8px; border: 1px solid {sb_e_br}; letter-spacing: 0.35px; background-color: {sb_e_bg}; }}
         QLabel#StreamBadgeProfile {{ color: {sb_p_txt}; font-size: 10px; font-weight: 800; padding: 5px 10px; border-radius: 8px; border: 1px solid {sb_p_br}; letter-spacing: 0.35px; background-color: {sb_p_bg}; }}
-        QLabel#RecBadgeChip {{ color: #F87171; font-size: 8px; font-weight: 900; background-color: rgba(239, 68, 68, 0.12); padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(239, 68, 68, 0.32); }}
+        QLabel#RecBadgeChip {{ color: #F87171; font-size: 8px; font-weight: 900; background-color: rgba(239, 68, 68, 0.15); padding: 2px 7px; border-radius: 4px; border: 1px solid rgba(239, 68, 68, 0.40); }}
+        QPushButton#RecToggle {{ background-color: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.35); border-radius: 8px; color: #F87171; font-size: 9px; font-weight: 900; letter-spacing: 0.4px; }}
+        QPushButton#RecToggle:checked {{ background-color: rgba(239,68,68,0.22); border: 1px solid rgba(239,68,68,0.65); color: #FF453A; }}
+        QPushButton#RecToggle:hover {{ background-color: rgba(239,68,68,0.18); }}
         QLabel#DockerTagLine {{ color: {docker_tag_txt}; font-size: 9px; font-weight: 900; letter-spacing: 0.45px; border: none; background: transparent; }}
         QLabel#AiMetaLine {{ color: {sub}; font-size: 11px; font-weight: 800; letter-spacing: 0.2px; border: none; background: transparent; }}
-        QLabel#AiMetaLineActive {{ color: {ai_hot}; font-size: 11px; font-weight: 800; letter-spacing: 0.2px; border: none; background: transparent; }}
+        QLabel#AiMetaLineActive {{ color: {ai_hot}; font-size: 11px; font-weight: 900; letter-spacing: 0.2px; border: none; background: transparent; }}
         QLabel#FormLabel {{ color: {sub}; font-size: 13px; font-weight: 700; border: none; background: transparent; }}
         QLabel#FormLabelSm {{ color: {sub}; font-size: 12px; font-weight: 700; border: none; background: transparent; }}
         QLabel#CaptionMuted {{ color: {sub}; font-size: 11px; border: none; background: transparent; }}
@@ -2414,6 +2484,9 @@ def set_camera_defaults(
 class VideoThread(QThread):
     change_pixmap = Signal(np.ndarray)
     analytics_signal = Signal(dict)
+    fps_signal = Signal(float)           # rolling FPS (emitted ~1/s)
+    connection_signal = Signal(str)      # "connecting" | "connected" | "reconnecting"
+    snap_done_signal = Signal(str)       # absolute path of saved snapshot
     
     def __init__(self, src, engine="STANDARD", target_size=None, camera_options=None, recording_label=None):
         super().__init__()
@@ -2477,6 +2550,7 @@ class VideoThread(QThread):
             log.warning("Failed to open video source: %s", source)
             return
 
+        self.connection_signal.emit("connected")
         log.info("Stream established: %s", source)
         # Fixed focus: CSI digit source, Linux, focus_mode=fixed — apply once with configured I2C bus
         try:
@@ -2502,8 +2576,11 @@ class VideoThread(QThread):
                             logging.warning("Fixed focus script failed (bus=%s pos=%s): %s", bus, pos, err or r.returncode)
         except Exception as e:
             logging.debug("fixed focus apply: %s", e)
+        _fps_t0 = time.monotonic()
+        _fps_count = 0
         while self.running:
             if cap is None or not cap.isOpened():
+                self.connection_signal.emit("reconnecting")
                 log.warning("Reconnecting to %s", source)
                 cap = self._open_capture(source)
                 time.sleep(2); continue
@@ -2527,6 +2604,7 @@ class VideoThread(QThread):
                 path = os.path.join(rec_dir, f"SNAP_{datetime.now().strftime('%m%d_%H%M%S')}.jpg")
                 cv2.imwrite(path, frame)
                 self.snap_req = False
+                self.snap_done_signal.emit(path)
 
             if self.is_recording:
                 rec_frame = frame.copy()
@@ -2538,6 +2616,13 @@ class VideoThread(QThread):
                     self.out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*'MJPG'), 20, (frame.shape[1], frame.shape[0]))
                 self.out.write(rec_frame)
             
+            # Rolling FPS — emit once per second
+            _fps_count += 1
+            _now = time.monotonic()
+            if _now - _fps_t0 >= 1.0:
+                self.fps_signal.emit(_fps_count / (_now - _fps_t0))
+                _fps_t0 = _now
+                _fps_count = 0
             self.change_pixmap.emit(frame)
             time.sleep(0.01)
         if self.out: self.out.release(); self.out = None
@@ -4845,6 +4930,9 @@ class App(QMainWindow):
             )
             t.change_pixmap.connect(card.upd_img)
             t.analytics_signal.connect(card.update_ai_ui)
+            t.fps_signal.connect(card.update_fps)
+            t.connection_signal.connect(card.update_connection_status)
+            t.snap_done_signal.connect(card.on_snap_done)
             t.start(); card.t = t
         else:
             card.view.setText("No source signal")
