@@ -512,6 +512,35 @@ def get_zerotier_peers():
         return []
 
 
+def ssh_get_zerotier_ips(client):
+    """SSH ile bağlı uzak cihazda zerotier-cli çalıştırarak ZT sanal IP'lerini döndürür.
+    `listpeers`'daki fiziksel path IP'den farklı olarak bu fonksiyon gerçek ZT sanal IP'yi verir.
+    Döndürülen IP'ler CIDR notasyonu olmadan (örn. '10.144.1.5') gelir.
+    """
+    try:
+        out, err, code = ssh_exec_text(
+            client,
+            "zerotier-cli -j listnetworks 2>/dev/null || echo '[]'",
+            timeout=15,
+        )
+        raw = (out or "").strip()
+        if not raw or raw == "[]":
+            return []
+        data = json.loads(raw)
+        ips = []
+        for net in (data if isinstance(data, list) else []):
+            addrs = net.get("assignedAddresses") or []
+            if not isinstance(addrs, list):
+                addrs = [addrs] if addrs else []
+            for addr in addrs:
+                ip = str(addr).split("/")[0].strip()
+                if ip and ip not in ips:
+                    ips.append(ip)
+        return ips
+    except Exception:
+        return []
+
+
 def open_ssh_in_terminal(user, host, key_path=None):
     """Open ssh user@host in the system terminal (password prompt OK). Uses ssh -i when key_path is set."""
     if not host or not host.strip():
@@ -2987,10 +3016,20 @@ class App(QMainWindow):
             empty_zt.setObjectName("CaptionMuted")
             self.dev_zt_layout.addWidget(empty_zt)
         else:
+            # ZT peer listesi için uyarı notu: gösterilen IP fiziksel path IP'sidir
+            path_ip_warn = QLabel(
+                "⚠ Aşağıdaki IP'ler ZeroTier sanal IP'si değil, fiziksel bağlantı (LAN/WAN) IP'sidir. "
+                "Gerçek ZT sanal IP için cihaza SSH ile bağlanın → 'Saved devices' bölümünden ZT IP'yi alın."
+            )
+            path_ip_warn.setObjectName("CaptionMuted")
+            path_ip_warn.setWordWrap(True)
+            path_ip_warn.setStyleSheet("color: #FF9F0A; font-size: 11px; font-weight: 600; padding: 4px 0 8px 0;")
+            self.dev_zt_layout.addWidget(path_ip_warn)
             header_w = QWidget(); header_w.setStyleSheet("border:none; background:transparent;"); hl = QHBoxLayout(header_w); hl.setContentsMargins(12,0,12,6)
-            ip_h = QLabel("IP")
+            ip_h = QLabel("Path IP (fiziksel) ⚠")
             ip_h.setObjectName("CaptionMutedSm")
-            ip_h.setMinimumWidth(110)
+            ip_h.setToolTip("Bu IP ZeroTier sanal IP'si değil, fiziksel LAN/WAN IP'sidir.\nZT sanal IP için cihaza SSH bağlayın.")
+            ip_h.setMinimumWidth(140)
             hl.addWidget(ip_h)
             u_h = QLabel("SSH user")
             u_h.setObjectName("CaptionMutedSm")
@@ -3023,6 +3062,22 @@ class App(QMainWindow):
                         self.node_ip.setText(ip_addr)
                     self.switch(4)
                     self.show_toast(f"Remote host set: {ip_addr}")
+                def _save_and_connect(u_edit, ip_addr, node_addr):
+                    """Peer'ı saved devices'a kaydet ve SSH bağlantı dialogunu aç."""
+                    if not ip_addr:
+                        self.show_toast("IP bulunamadı — cihaz aktif bir path'e sahip değil")
+                        return
+                    usr = u_edit.text().strip() or "jetson"
+                    dev_name = f"ZT-{node_addr[:6]}" if node_addr and node_addr != "—" else f"ZT-{ip_addr}"
+                    # Zaten kayıtlı mı kontrol et
+                    existing = [d for d in self.db.get_devices() if d[1] == ip_addr]
+                    if not existing:
+                        self.db.save_device(dev_name, ip_addr, usr)
+                        self.show_toast(f"Cihaz kaydedildi: {dev_name}")
+                    else:
+                        self.show_toast(f"Zaten kayıtlı: {existing[0][0]}")
+                    # SSH bağlantı dialogunu aç
+                    self._ssh_show_connect_dialog(ip_addr, usr)
                 copy_btn = QPushButton("Copy command")
                 copy_btn.setObjectName("RowGhost")
                 copy_btn.setFixedHeight(28)
@@ -3040,7 +3095,19 @@ class App(QMainWindow):
                 use_host_btn.setToolTip("Set this IP as the Docker remote host in Settings")
                 use_host_btn.setEnabled(bool(ip))
                 use_host_btn.clicked.connect(lambda _, ipa=ip: _use_as_remote(ipa) if ipa else None)
-                rl.addWidget(copy_btn); rl.addWidget(term_btn); rl.addWidget(use_host_btn)
+                save_conn_btn = QPushButton("Save & Connect")
+                save_conn_btn.setObjectName("BtnPrimary")
+                save_conn_btn.setFixedHeight(28)
+                save_conn_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                save_conn_btn.setToolTip(
+                    "Bu peer'ı Saved Devices'a kaydet ve SSH bağlantısı kur.\n"
+                    "Bağlandıktan sonra ZT sanal IP ve kamera listesi görünür."
+                )
+                save_conn_btn.setEnabled(bool(ip))
+                save_conn_btn.clicked.connect(
+                    lambda _, ue=user_edit, ipa=ip, na=addr: _save_and_connect(ue, ipa, na)
+                )
+                rl.addWidget(copy_btn); rl.addWidget(term_btn); rl.addWidget(use_host_btn); rl.addWidget(save_conn_btn)
                 self.dev_zt_layout.addWidget(row)
         while self.dev_saved_layout.count():
             item = self.dev_saved_layout.takeAt(0)
@@ -3100,6 +3167,39 @@ class App(QMainWindow):
             primary_row.addStretch()
             cl.addLayout(primary_row)
             if connected:
+                # --- ZeroTier sanal IP bölümü ---
+                ssh_key = ssh_session_key(host, u)
+                ssh_client = self._ssh_sessions.get(ssh_key)
+                zt_ips = ssh_get_zerotier_ips(ssh_client) if ssh_client else []
+                if zt_ips:
+                    zt_head = QLabel("ZeroTier Virtual IP")
+                    zt_head.setObjectName("NetworkPanelHeading")
+                    cl.addWidget(zt_head)
+                    zt_inner = QFrame()
+                    zt_inner.setObjectName("FocusInner")
+                    zt_il = QHBoxLayout(zt_inner)
+                    zt_il.setContentsMargins(12, 10, 12, 10)
+                    zt_il.setSpacing(10)
+                    zt_ip_lbl = QLabel("  ".join(zt_ips))
+                    zt_ip_lbl.setObjectName("MonoIp")
+                    zt_il.addWidget(zt_ip_lbl)
+                    zt_il.addStretch()
+                    for zt_ip in zt_ips:
+                        def _use_zt_ip(ip=zt_ip):
+                            if getattr(self, "node_ip", None):
+                                self.node_ip.setText(ip)
+                            self.switch(4)
+                            self.show_toast(f"Remote host (ZT) ayarlandı: {ip}")
+                        use_zt_btn = QPushButton(f"Use as Remote Host")
+                        use_zt_btn.setObjectName("RowAccent")
+                        use_zt_btn.setFixedHeight(28)
+                        use_zt_btn.setToolTip(f"Docker remote host olarak ZT sanal IP'yi ayarla: {zt_ip}")
+                        use_zt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                        use_zt_btn.clicked.connect(_use_zt_ip)
+                        zt_il.addWidget(use_zt_btn)
+                    cl.addWidget(zt_inner)
+
+                # --- Kameralar bölümü ---
                 cam_head = QLabel("Cameras on device")
                 cam_head.setObjectName("NetworkPanelHeading")
                 cl.addWidget(cam_head)
@@ -3109,17 +3209,69 @@ class App(QMainWindow):
                 il.setContentsMargins(12, 12, 12, 12)
                 il.setSpacing(6)
                 lines = self._ssh_list_camera_lines(host, u)
+                # Yayın eklemek için kullanılacak IP: ZT sanal IP varsa onu, yoksa host IP'sini kullan
+                stream_ip = zt_ips[0] if zt_ips else host
                 if not lines:
                     empty = QLabel("No entries returned. Use page refresh after fixing the device.")
                     empty.setObjectName("CaptionMuted")
                     il.addWidget(empty)
                 else:
                     for line in lines:
+                        cam_row = QHBoxLayout()
+                        cam_row.setSpacing(8)
                         ln = QLabel(line)
                         ln.setObjectName("MonoMuted")
                         ln.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                         ln.setWordWrap(True)
-                        il.addWidget(ln)
+                        cam_row.addWidget(ln, 1)
+                        # "Add to Broadcasts" butonu: RTSP URL ile kamera ekle
+                        def _add_cam_from_ssh(cam_line=line, sip=stream_ip, dev_name=name):
+                            # Kamera indeksini /dev/video0 → 0 olarak çıkar
+                            import re as _re
+                            m = _re.search(r"/dev/video(\d+)", cam_line)
+                            cam_idx = m.group(1) if m else "0"
+                            default_url = f"rtsp://{sip}:8554/video{cam_idx}"
+                            # Küçük dialog: URL düzenlenebilir
+                            dlg = QDialog(self)
+                            dlg.setWindowTitle("Add Camera to Broadcasts")
+                            dlg.setFixedWidth(480)
+                            dlg_l = QVBoxLayout(dlg)
+                            dlg_l.setContentsMargins(20, 20, 20, 20)
+                            dlg_l.setSpacing(12)
+                            info = QLabel(
+                                f"<b>{dev_name}</b> cihazındaki <b>{cam_line}</b> kamerasını Broadcasts'e ekle.<br>"
+                                f"ZT sanal IP: <b>{sip}</b><br><br>"
+                                "RTSP URL'yi düzenleyin (Jetson'da çalışan RTSP sunucusuna göre):"
+                            )
+                            info.setWordWrap(True)
+                            dlg_l.addWidget(info)
+                            url_edit = QLineEdit(default_url)
+                            url_edit.setPlaceholderText("rtsp://10.x.x.x:8554/stream")
+                            dlg_l.addWidget(url_edit)
+                            name_edit = QLineEdit(f"{dev_name} — {cam_line}")
+                            name_edit.setPlaceholderText("Kamera adı")
+                            dlg_l.addWidget(name_edit)
+                            btns = QDialogButtonBox(
+                                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                            )
+                            btns.accepted.connect(dlg.accept)
+                            btns.rejected.connect(dlg.reject)
+                            dlg_l.addWidget(btns)
+                            if dlg.exec() == QDialog.DialogCode.Accepted:
+                                url = url_edit.text().strip()
+                                cam_name = name_edit.text().strip() or f"{dev_name} cam"
+                                if url:
+                                    self.add_cam_logic(cam_name, url, "Stream|STANDARD|AUTO")
+                                    self.switch(0)
+                                    self.show_toast(f"Kamera eklendi: {cam_name}")
+                        add_btn = QPushButton("Add to Broadcasts")
+                        add_btn.setObjectName("RowAccent")
+                        add_btn.setFixedHeight(26)
+                        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                        add_btn.setToolTip(f"Bu kamerayı Broadcasts sayfasına RTSP stream olarak ekle (ZT IP: {stream_ip})")
+                        add_btn.clicked.connect(_add_cam_from_ssh)
+                        cam_row.addWidget(add_btn)
+                        il.addLayout(cam_row)
                 cl.addWidget(inner)
             util_row = QHBoxLayout()
             util_row.setSpacing(8)
