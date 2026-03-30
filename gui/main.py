@@ -2025,6 +2025,9 @@ class ThemeOps:
             color: {txt};
             outline: 0px;
             border-radius: 12px;
+            selection-background-color: #007AFF;
+            selection-color: #ffffff;
+            show-decoration-selected: 1;
         }}
         QComboBox QAbstractItemView::item, QComboBox QListView::item {{
             min-height: 38px;
@@ -2032,10 +2035,11 @@ class ThemeOps:
             background-color: {card};
             color: {txt};
             border: none;
+            margin: 0px;
         }}
         QComboBox QAbstractItemView::item:selected, QComboBox QListView::item:selected {{
             background-color: #007AFF;
-            color: white;
+            color: #ffffff;
             border: none;
         }}
         QComboBox QAbstractItemView::item:hover, QComboBox QListView::item:hover {{
@@ -4633,11 +4637,14 @@ class App(QMainWindow):
         # the unstylable native GTK popup rendering on Ubuntu.
         def make_combo():
             c = QComboBox()
-            c.setView(QListView())
+            v = QListView()
+            c.setView(v)
             c.setFixedHeight(40)
             c.setMaxVisibleItems(8)
             c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            c.view().setMaximumHeight(168)
+            v.setMaximumHeight(168)
+            v.setUniformItemSizes(True)
+            v.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
             return c
 
         # Form Area Widgets
