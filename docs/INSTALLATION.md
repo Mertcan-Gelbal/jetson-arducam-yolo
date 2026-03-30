@@ -17,7 +17,7 @@ This guide provides comprehensive instructions for setting up the YOLOv8 Arducam
 ### Hardware Setup
 
 1. **Jetson Device**: Ensure your Jetson is properly powered and connected
-2. **Camera Connection**: Attach Arducam IMX519 cameras to MIPI CSI ports
+2. **Camera Connection**: Attach Arducam (or compatible) CSI modules to MIPI CSI ports — e.g. IMX219, IMX230, IMX477, IMX519 (see [CSI_CAMERA_FOCUS.md](CSI_CAMERA_FOCUS.md) for sensor notes)
 3. **Storage**: Verify you have sufficient storage (32GB minimum)
 4. **Cooling**: Ensure proper cooling for extended operation
 

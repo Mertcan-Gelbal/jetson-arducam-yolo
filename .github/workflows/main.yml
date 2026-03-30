@@ -31,7 +31,7 @@ jobs:
           --select=E9,F63,F7,F82 \
           --show-source \
           --statistics \
-          --exclude=gui/main.py  # PyQt5 imports are conditional; checked separately
+          --exclude=gui/main.py  # PySide6/Qt UI; checked via import smoke test separately
 
     - name: Style warnings (non-blocking)
       run: |
@@ -92,3 +92,17 @@ jobs:
         sed 's/runtime: nvidia/# runtime: nvidia (CI override)/' docker-compose.yml \
           | docker compose -f - config --quiet \
           && echo "docker-compose.yml is valid"
+
+  # ─── 5. Fabrika duman testi (GUI bağımlılıkları) ─────────────────────────────
+  factory-smoke:
+    name: Factory smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install GUI stack for smoke test
+        run: pip install -q -r gui/requirements.txt
+      - name: Run scripts/factory_smoke_test.sh
+        run: bash scripts/factory_smoke_test.sh

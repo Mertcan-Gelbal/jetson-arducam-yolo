@@ -7,7 +7,7 @@ This guide provides detailed usage instructions and examples for the YOLOv8 Ardu
 - [Basic Usage](#basic-usage)
 - [Advanced Features](#advanced-features)
 - [VisionDock: workspaces directory](#visiondock-workspaces-directory)
-- [Remote Management (Mac → Jetson)](#remote-management-mac--jetson)
+- [Remote Jetson from a development PC](#remote-jetson-from-a-development-pc)
 - [Example Scripts](#example-scripts)
 - [Docker Commands](#docker-commands)
 - [Performance Optimization](#performance-optimization)
@@ -70,24 +70,29 @@ python3 examples/multi_camera_detection.py --cameras 0 1 --conf 0.3 --display
 
 Proje kökündeki **`workspaces/`** dizini VisionDock Studio tarafından kullanılır. **Device: Local** ile yeni bir workspace oluşturduğunuzda, uygulama bu dizinin altında workspace adına karşılık gelen bir klasör açar (örn. `workspaces/my_lab`) ve Docker container’ı bu klasörü `/workspace` olarak mount eder. Böylece container içindeki dosyalar doğrudan diskinizde kalır. Remote device seçildiğinde mount kullanılmaz; container uzak cihazda kendi dosya sisteminde çalışır. Bu dizin otomatik oluşturulur ve `.gitignore`’da yer alır (versiyon kontrolüne eklenmez).
 
-## Remote Management (Mac → Jetson)
+## Remote Jetson from a development PC
 
-VisionDock GUI’yi Mac’te çalıştırıp Jetson’ı (kamera erişimli cihaz) ZeroTier ağı üzerinden yönetebilirsiniz.
+Run the VisionDock GUI on a **non-Jetson machine** (e.g. a laptop running Linux, macOS, or Windows) and manage a Jetson over the network. A typical setup uses **ZeroTier** as a virtual LAN plus Docker listening on TCP on the Jetson.
 
-**Kullanıcı dostu adım adım rehber:** [Mac'ten Jetson'ı Yönetme Rehberi](MAC_JETSON_YONETIMI.md) — tek sayfa, kurulum listesi ve sık sorunlar.
+### Requirements
 
-### Gereksinimler
+| Side | Needs |
+|------|--------|
+| **Development PC** | Python 3, **PySide6** (see `gui/requirements.txt`), **Docker CLI** (talks to the remote socket). GUI: `python3 gui/main.py` or `./start_gui.sh`. |
+| **Jetson** | Docker, ZeroTier member, Docker daemon listening on `2375` as below. |
+| **Network** | Both hosts on the same ZeroTier network (or another trusted path). |
 
-1. **Mac:** Python 3, PyQt5, Docker CLI (uzak Docker için). GUI: `./start_gui.sh` veya `python3 gui/main.py`.
-2. **Jetson:** Docker, ZeroTier üyesi, Docker daemon’ın TCP üzerinden dinlemesi (aşağıda).
-3. **ZeroTier:** Her iki cihaz aynı ZeroTier ağına katılmış olmalı.
+### One-time: ZeroTier
 
-### Jetson’da Docker TCP erişimi
+1. Create a [zerotier.com](https://www.zerotier.com) account; create a **Network** and copy the **Network ID**.
+2. Install ZeroTier on both the development PC and the Jetson; join the **same** Network ID on each.
+3. On the Jetson, read the assigned IP: `zerotier-cli listnetworks` → **assignedAddresses** (e.g. `10.144.x.x`). Enter that IP in VisionDock **Settings → Remote host** (not the peer Node ID from the list).
 
-Jetson’da Docker’a uzaktan bağlanmak için daemon’ın `2375` portunu dinlemesi gerekir:
+### One-time: Docker TCP on Jetson (remote API)
+
+On the Jetson (e.g. over SSH):
 
 ```bash
-# systemd override ile
 sudo mkdir -p /etc/systemd/system/docker.service.d
 echo '[Service]
 ExecStart=
@@ -96,25 +101,39 @@ sudo systemctl daemon-reload
 sudo systemctl restart docker
 ```
 
-Güvenlik: Sadece güvendiğiniz ağlarda (örn. ZeroTier) kullanın; gerekirse firewall ile 2375’i sadece ZeroTier arayüzüne kısıtlayın.
+**Security:** Use only on networks you trust (e.g. ZeroTier). Prefer firewall rules so `2375` is reachable only from the VPN interface if possible.
 
-### GUI’de uzak düğüm ayarı
+### VisionDock: remote node
 
-1. **Settings** sekmesine gidin.
-2. **REMOTE NODE (IP):** Jetson’ın ZeroTier ağ IP’sini girin (örn. `10.144.1.5`). ZT peer listesi Node ID gösterir; Docker için **ağ IP’si** gerekir (Jetson’da `zerotier-cli listnetworks` ile kendi IP’nizi görebilirsiniz).
-3. **KAMERA CİHAZI (UZAK DÜĞÜM):** Bu alan Jetson’a TCP 2375 ile erişimi test eder; **Çevrimiçi** / **Çevrimdışı** gösterir. Durum periyodik güncellenir.
-4. Workspaces’te container listesi ve işlemler artık seçili uzak düğüme (Jetson) gider.
+1. Open **Settings**.
+2. Set **Remote host (IP)** to the Jetson’s address on that network (e.g. ZeroTier IP). The value is saved under **`~/.visiondock/app_prefs.json`** so it comes back on the next launch. To force a different address for one session only, set the environment variable **`JETSON_REMOTE`** (it overrides the saved file when the app starts).
+3. **Status** shows whether Docker on that host responds on TCP 2375.
+4. **Workspaces** lists and controls containers on the selected host.
 
-Böylece Mac’ten container’ları listeleyebilir, log/shell açabilir ve kamera cihazının açık/erişilebilir olup olmadığını görebilirsiniz.
+### Quick checklist
 
-### Kamera akışını uzaktan izleme
+| Done? | Item |
+|-------|------|
+| ☐ | ZeroTier: development PC and Jetson joined the same network |
+| ☐ | Jetson: Docker listening on 2375 (`ss -tlnp \| grep 2375`) |
+| ☐ | Jetson IP known (`zerotier-cli listnetworks`) |
+| ☐ | VisionDock Settings: that IP set; status shows **online** |
+| ☐ | Development PC: `docker --version` works |
 
-Jetson’da UDP stream açıp Mac’te VLC ile izleyebilirsiniz:
+### Troubleshooting
+
+- **Status always offline:** Jetson power and network; both hosts on the same ZT network; IP matches `listnetworks`; on Jetson `sudo systemctl status docker` and confirm port 2375 is listening.
+- **Empty container list or errors:** Fix online status first; on Jetson run `docker ps`.
+- **No ZT peers:** ZeroTier running on both sides; nodes authorized in ZeroTier Central.
+
+### Watching a stream from another machine
+
+On the Jetson (host or container), stream out; on the **viewer** open VLC (or similar):
 
 ```bash
-# Jetson'da (container veya host)
-python3 examples/analytics_detection.py --stream-out --stream-ip <MAC_ZEROTIER_IP> --display
-# Mac'te VLC: Media → Open Network Stream → udp://@0.0.0.0:5000
+# Jetson
+python3 examples/analytics_detection.py --stream-out --stream-ip <VIEWER_ZEROTIER_IP> --display
+# Viewer: VLC → Open Network Stream → udp://@0.0.0.0:5000
 ```
 
 ### Hardware-Accelerated Pipeline

@@ -71,12 +71,15 @@ Include your L4T version (`dpkg-query --showformat='${Version}' --show nvidia-l4
 
 ## Documentation
 
-| Rehber | Açıklama |
-|--------|----------|
-| [Mac'ten Jetson Yönetimi](docs/MAC_JETSON_YONETIMI.md) | Mac'ten kamera cihazını yönetme (ZeroTier, adım adım) |
-| [USAGE](docs/USAGE.md) | Kullanım ve örnekler |
-| [INSTALLATION](docs/INSTALLATION.md) | Kurulum (Jetson, kamera, Docker) |
-| [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Sorun giderme |
+| Guide | Description |
+|-------|-------------|
+| [USAGE](docs/USAGE.md) | Usage, examples, remote Jetson from a dev PC (ZeroTier, Docker) |
+| [INSTALLATION](docs/INSTALLATION.md) | Install Jetson, camera, Docker |
+| [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Troubleshooting |
+| [CSI cameras & focus](docs/CSI_CAMERA_FOCUS.md) | IMX219/230/477/519 and others — pipeline, I2C focus when motorized |
+| [DEVELOPMENT](docs/DEVELOPMENT.md) | Dev workflow: layout, common files, `~/.visiondock/`, local notes |
+
+Release notes: [CHANGELOG.md](CHANGELOG.md). Private scratch notes: `dev-notes/` (see [dev-notes/README.md](dev-notes/README.md)).
 
 ## Support
 For technical support or commercial inquiries, please refer to the internal documentation in the `docs/` folder or open a GitHub issue. Developed for professional AI engineers and vision researchers.
