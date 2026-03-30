@@ -909,66 +909,35 @@ class Toast(QWidget):
         self._slide.start()
 
 class FadeStackedWidget(QStackedWidget):
-    """QStackedWidget with smooth 160ms fade-out / 220ms fade-in page transitions."""
+    """
+    Safe page switcher (no QGraphicsOpacityEffect on heavy pages).
+
+    NOTE:
+    Previous implementation used QGraphicsOpacityEffect during transitions.
+    On some Qt/driver combinations this can trigger repeated warnings:
+      - QPainter::begin: A paint device can only be painted by one painter at a time.
+      - QWidgetEffectSourcePrivate::pixmap: Painter not active
+    To keep the UI stable and production-safe, we use direct switching.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._animating = False
+        self._switching = False
         self._pending_index = -1
-        self._anim_out = None
-        self._anim_in = None
 
     def setCurrentIndex(self, index):
         if index == self.currentIndex():
             return
-        if self._animating:
+        if self._switching:
             self._pending_index = index
             return
-        current = self.currentWidget()
-        if current is None:
-            super().setCurrentIndex(index)
-            return
-        self._animating = True
-        self._pending_index = -1
-        eff = QGraphicsOpacityEffect(current)
-        current.setGraphicsEffect(eff)
-        anim_out = QPropertyAnimation(eff, b"opacity", self)
-        anim_out.setDuration(160)
-        anim_out.setStartValue(1.0)
-        anim_out.setEndValue(0.0)
-        anim_out.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._anim_out = anim_out
-
-        def _on_out():
-            current.setGraphicsEffect(None)
-            super(FadeStackedWidget, self).setCurrentIndex(index)
-            nw = self.currentWidget()
-            if nw is None:
-                self._animating = False
-                self._flush_pending()
-                return
-            eff2 = QGraphicsOpacityEffect(nw)
-            nw.setGraphicsEffect(eff2)
-            anim_in = QPropertyAnimation(eff2, b"opacity", self)
-            anim_in.setDuration(220)
-            anim_in.setStartValue(0.0)
-            anim_in.setEndValue(1.0)
-            anim_in.setEasingCurve(QEasingCurve.Type.InCubic)
-            self._anim_in = anim_in
-
-            def _on_in():
-                nw.setGraphicsEffect(None)
-                self._animating = False
-                self._flush_pending()
-
-            anim_in.finished.connect(_on_in)
-            anim_in.start()
-
-        anim_out.finished.connect(_on_out)
-        anim_out.start()
+        self._switching = True
+        super().setCurrentIndex(index)
+        self._switching = False
+        self._flush_pending()
 
     def _flush_pending(self):
-        if self._pending_index >= 0:
+        if self._pending_index >= 0 and self._pending_index != self.currentIndex():
             idx = self._pending_index
             self._pending_index = -1
             self.setCurrentIndex(idx)
