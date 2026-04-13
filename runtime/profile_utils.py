@@ -24,7 +24,7 @@ def load_json(path: str, fallback):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return fallback
 
 
@@ -47,7 +47,13 @@ def default_inspection_profile():
 def load_inspection_profile():
     defaults = default_inspection_profile()
     saved = load_json(inspection_profile_path(), {})
-    return _deep_merge(defaults, saved)
+    merged = _deep_merge(defaults, saved)
+    if isinstance(merged, dict):
+        if not merged.get("camera_name") and merged.get("station_name"):
+            merged["camera_name"] = merged.get("station_name")
+        if not merged.get("station_name") and merged.get("camera_name"):
+            merged["station_name"] = merged.get("camera_name")
+    return merged
 
 
 def save_inspection_profile(profile: dict) -> None:

@@ -9,6 +9,7 @@ if __package__ in (None, ""):
 
 from runtime.storage import results_root_dir
 from runtime.profile_utils import load_inspection_profile
+from runtime.camera_profiles import detect_local_jetson_sensor_model
 
 def check_disk_space(path):
     """Returns True if path has at least 500MB free space."""
@@ -18,19 +19,17 @@ def check_disk_space(path):
         st = os.statvfs(path)
         free_mb = (st.f_bavail * st.f_frsize) / (1024 * 1024)
         return free_mb > 500, free_mb
-    except Exception:
+    except OSError:
         return False, 0
 
 def check_port_open(ip, port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(1)
-    try:
-        s.connect((ip, int(port)))
-        return True
-    except (socket.timeout, ConnectionRefusedError):
-        return False
-    finally:
-        s.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        try:
+            s.connect((ip, int(port)))
+            return True
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            return False
 
 def run_selfcheck(quiet=False):
     """
@@ -41,7 +40,19 @@ def run_selfcheck(quiet=False):
 
     # 1. Profile
     profile = load_inspection_profile()
-    checks.append(f"Profile Loaded: {profile.get('station_name')}")
+    checks.append(f"Profile Loaded: {profile.get('camera_name') or profile.get('station_name') or 'Camera System'}")
+    camera_cfg = profile.get("camera") or {}
+    checks.append(f"Camera Sensor: {camera_cfg.get('sensor_model') or 'GENERIC_CSI'}")
+    checks.append(f"Focus Hardware: {camera_cfg.get('focuser_type') or 'none'}")
+    runtime_cfg = profile.get("runtime") or {}
+    runtime_host = str(runtime_cfg.get("host") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        runtime_port = int(runtime_cfg.get("port") or 8787)
+    except (TypeError, ValueError):
+        runtime_port = 8787
+    detected_sensor = detect_local_jetson_sensor_model()
+    if detected_sensor:
+        checks.append(f"Detected Sensor: {detected_sensor}")
 
     # 2. Results Directory Write Permission
     r_dir = results_root_dir()
@@ -52,7 +63,7 @@ def run_selfcheck(quiet=False):
             f.write("OK")
         os.remove(test_file)
         checks.append("Storage Access: OK")
-    except Exception as e:
+    except OSError as e:
         faults.append(f"Storage Access Failed: {e}")
 
     # 3. Disk Space
@@ -69,8 +80,18 @@ def run_selfcheck(quiet=False):
             checks.append("Jetson.GPIO: Installed and Accessible")
         except ImportError:
             faults.append("Jetson.GPIO module is missing, but GPIO is enabled in profile.")
-        except Exception as e:
+        except RuntimeError as e:
             faults.append(f"Jetson.GPIO Initialization Failed: {e}")
+
+    # 5. Runtime endpoint accessibility
+    is_local_target = runtime_host in {"127.0.0.1", "localhost", "0.0.0.0"}
+    endpoint_open = check_port_open(runtime_host if not is_local_target else "127.0.0.1", runtime_port)
+    if endpoint_open:
+        checks.append(f"Runtime Endpoint: Reachable ({runtime_host}:{runtime_port})")
+    elif is_local_target:
+        checks.append(f"Runtime Endpoint: Not listening yet ({runtime_host}:{runtime_port})")
+    else:
+        faults.append(f"Runtime Endpoint Unreachable: {runtime_host}:{runtime_port}")
 
     # Output formatted report
     status = "PASS" if not faults else "FAIL"

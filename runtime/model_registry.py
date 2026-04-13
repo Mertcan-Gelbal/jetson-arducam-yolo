@@ -25,7 +25,7 @@ def load_state():
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return {}
 
 

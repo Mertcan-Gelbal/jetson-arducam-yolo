@@ -1,6 +1,9 @@
 import json
+import logging
 import os
 from datetime import datetime
+
+log = logging.getLogger("visiondock.runtime")
 
 
 def _visiondock_dir() -> str:
@@ -47,13 +50,13 @@ def _json_safe(value):
     if hasattr(value, "item"):
         try:
             return value.item()
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            return value
     if hasattr(value, "tolist"):
         try:
             return value.tolist()
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError):
+            return value
     return value
 
 
@@ -65,14 +68,17 @@ def _normalize_record(result: dict, profile=None, image_path=None) -> dict:
     inspection_id = str(result.get("inspection_id") or _now_id()).strip() or _now_id()
     record = {
         "inspection_id": inspection_id,
-        "station_name": result.get("station_name") or profile.get("station_name") or "Inspection Station",
+        "camera_name": result.get("camera_name") or profile.get("camera_name") or "Camera System",
+        "station_name": result.get("station_name") or result.get("camera_name") or profile.get("camera_name") or profile.get("station_name") or "Camera System",
         "captured_at": result.get("captured_at") or datetime.now().astimezone().isoformat(timespec="seconds"),
         "decision": str(result.get("decision") or "unknown").strip().lower(),
         "defect_classes": _json_safe(list(result.get("defect_classes") or [])),
         "confidence_summary": _json_safe(dict(result.get("confidence_summary") or {})),
+        "profile_name": result.get("profile_name") or inspection_cfg.get("profile_name") or "default_project",
         "model_version": result.get("model_version") or model_cfg.get("version") or "unassigned",
         "model_name": result.get("model_name") or model_cfg.get("name") or "No model deployed",
         "recipe_name": result.get("recipe_name") or inspection_cfg.get("recipe_name") or "default",
+        "product_label": result.get("product_label") or inspection_cfg.get("product_label") or "Inspection target",
         "duration_ms": int(result.get("duration_ms") or 0),
         "image_path": os.path.abspath(image_path) if image_path else result.get("image_path"),
         "source": result.get("source") or "manual",
@@ -103,9 +109,8 @@ def persist_result(result: dict, profile=None, image_path=None) -> dict:
     # Prune old results proactively to prevent disk exhaustion
     try:
         prune_old_results(max_count=1500)
-    except Exception as e:
-        import logging
-        logging.getLogger("visiondock.runtime").warning(f"Failed to prune old results: {e}")
+    except OSError as exc:
+        log.warning("Failed to prune old results due to filesystem error: %s", exc)
 
     return record
 
@@ -115,14 +120,26 @@ def prune_old_results(max_count=1500):
     if len(rows) <= max_count:
         return
     old_rows = rows[max_count:]
+    removed_ids = set()
     for row in old_rows:
+        rid = str(row.get("inspection_id") or "").strip()
+        if rid:
+            removed_ids.add(rid)
+        record_path = str(row.get("record_path") or "").strip()
+        if record_path and os.path.isfile(record_path):
+            try:
+                os.remove(record_path)
+            except OSError:
+                pass
         img_path = row.get("image_path")
         if img_path and os.path.exists(img_path):
             try:
                 os.remove(img_path)
             except OSError:
                 pass
-        delete_result(row.get("inspection_id"))
+    # Rebuild index once after batch deletion (avoid repeated O(n^2) rebuilds).
+    _rebuild_index()
+    _clear_latest_if_deleted(removed_ids)
 
 
 def load_latest_result():
@@ -131,7 +148,7 @@ def load_latest_result():
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else None
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
 
@@ -192,7 +209,7 @@ def _load_from_index() -> list:
                     continue
                 if isinstance(item, dict):
                     rows.append(item)
-    except Exception:
+    except OSError:
         return []
     return rows  # oldest-first; do NOT reverse here
 
@@ -213,7 +230,7 @@ def _load_from_records_dir() -> list:
                 data = json.load(f)
             if isinstance(data, dict):
                 rows.append(data)
-        except Exception:
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
             continue
     return rows
 
@@ -237,15 +254,23 @@ def delete_result(inspection_id: str) -> bool:
     # Rebuild index from remaining records so it stays consistent
     _rebuild_index()
     # Remove latest.json if it pointed to the deleted record
+    _clear_latest_if_deleted({target})
+    return removed
+
+
+def _clear_latest_if_deleted(deleted_ids: set):
+    if not deleted_ids:
+        return False
     lpath = latest_result_path()
     try:
         with open(lpath, "r", encoding="utf-8") as f:
             latest = json.load(f)
-        if str(latest.get("inspection_id") or "") == target:
+        if str(latest.get("inspection_id") or "").strip() in deleted_ids:
             os.remove(lpath)
-    except Exception:
-        pass
-    return removed
+            return True
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return False
 
 
 def _rebuild_index():
@@ -258,8 +283,8 @@ def _rebuild_index():
         with open(results_index_path(), "w", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except OSError as exc:
+        log.warning("Failed to rebuild results index: %s", exc)
 
 
 def count_results() -> int:
@@ -273,7 +298,7 @@ def count_results() -> int:
             for line in f:
                 if line.strip():
                     count += 1
-    except Exception:
+    except OSError:
         return 0
     return count
 

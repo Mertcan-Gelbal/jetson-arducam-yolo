@@ -157,7 +157,7 @@ class InferenceRunner:
         providers = ["CPUExecutionProvider"]
         try:
             available = ort.get_available_providers()
-        except Exception:
+        except (AttributeError, RuntimeError, ValueError):
             available = []
         if "CUDAExecutionProvider" in available:
             providers.insert(0, "CUDAExecutionProvider")
@@ -243,15 +243,15 @@ class InferenceRunner:
 
         penalties = []
         if mean_intensity < float(cfg["min_mean_intensity"]):
-            penalties.append(("underexposed_material", min(1.0, (cfg["min_mean_intensity"] - mean_intensity) / 80.0)))
+            penalties.append(("underexposed_frame", min(1.0, (cfg["min_mean_intensity"] - mean_intensity) / 80.0)))
         if mean_intensity > float(cfg["max_mean_intensity"]):
-            penalties.append(("overexposed_material", min(1.0, (mean_intensity - cfg["max_mean_intensity"]) / 80.0)))
+            penalties.append(("overexposed_frame", min(1.0, (mean_intensity - cfg["max_mean_intensity"]) / 80.0)))
         if lap_var < float(cfg["min_laplacian_var"]):
             penalties.append(("blur_or_out_of_focus", min(1.0, (cfg["min_laplacian_var"] - lap_var) / 120.0)))
         if edge_density < float(cfg["min_edge_density"]):
-            penalties.append(("low_texture_or_missing_sock", min(1.0, (cfg["min_edge_density"] - edge_density) * 12.0)))
+            penalties.append(("low_texture_or_missing_target", min(1.0, (cfg["min_edge_density"] - edge_density) * 12.0)))
         if edge_density > float(cfg["max_edge_density"]):
-            penalties.append(("wrinkle_or_alignment_noise", min(1.0, (edge_density - cfg["max_edge_density"]) * 6.0)))
+            penalties.append(("alignment_or_surface_noise", min(1.0, (edge_density - cfg["max_edge_density"]) * 6.0)))
 
         defect_score = max([score for _name, score in penalties], default=0.12)
         defect_classes = [name for name, score in penalties if score >= 0.15]

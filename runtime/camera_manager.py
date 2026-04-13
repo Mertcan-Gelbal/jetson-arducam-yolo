@@ -6,6 +6,8 @@ import time
 import cv2
 import numpy as np
 
+from runtime.camera_profiles import csi_sensor_label
+
 
 log = logging.getLogger("visiondock.runtime")
 
@@ -62,8 +64,8 @@ class CameraManager:
             if self._cap is not None:
                 try:
                     self._cap.release()
-                except Exception:
-                    pass
+                except cv2.error as exc:
+                    log.warning("Camera release failed: %s", exc)
             self._cap = None
             self._opened_backend = None
 
@@ -76,8 +78,9 @@ class CameraManager:
         if custom:
             return custom
         if backend == "jetson_csi_argus":
+            sensor_model = csi_sensor_label(self.camera_cfg.get("sensor_model") or "GENERIC_CSI")
             return (
-                f"Jetson CSI sensor {int(self.camera_cfg.get('sensor_id') or 0)} "
+                f"Jetson CSI {sensor_model} sensor {int(self.camera_cfg.get('sensor_id') or 0)} "
                 f"via Argus ({int(self.camera_cfg.get('capture_width') or 1920)}x"
                 f"{int(self.camera_cfg.get('capture_height') or 1080)} @ "
                 f"{int(self.camera_cfg.get('framerate') or 30)} fps)"
@@ -212,6 +215,7 @@ class CameraManager:
         capture_meta = {
             "backend": backend,
             "preview_source": self.preview_label(),
+            "sensor_model": self.camera_cfg.get("sensor_model") or "GENERIC_CSI",
             "frame_count": len(frames),
             "capture_duration_ms": duration_ms,
         }

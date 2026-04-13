@@ -104,5 +104,5 @@ class JetsonGPIOOutputDriver(BaseOutputDriver):
         if self.GPIO is not None:
             try:
                 self.GPIO.cleanup()
-            except Exception as exc:
+            except (RuntimeError, OSError, AttributeError) as exc:
                 log.warning("GPIO cleanup failed: %s", exc)

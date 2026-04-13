@@ -43,7 +43,7 @@ def load_package_metadata(package_dir: str):
             data["package_dir"] = package_dir
             data["metadata_path"] = meta_path
             return data
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
     return None
 

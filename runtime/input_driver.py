@@ -54,7 +54,7 @@ class JetsonGPIOInputDriver:
         
         try:
             GPIO.setup(self._pin, GPIO.IN, pull_up_down=pull_up_down)
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             log.error(f"Failed to setup trigger pin {self._pin}: {e}")
             return False
 
@@ -80,7 +80,7 @@ class JetsonGPIOInputDriver:
                         log.debug("Hardware trigger detected!")
                         # Dispatch the callback in a separate thread so we don't block the listener
                         threading.Thread(target=self._safe_callback, daemon=True).start()
-            except Exception as e:
+            except (RuntimeError, OSError, ValueError) as e:
                 log.error(f"Error in hardware trigger monitor loop: {e}")
                 time.sleep(1)
 
@@ -88,7 +88,7 @@ class JetsonGPIOInputDriver:
         if self.trigger_callback:
             try:
                 self.trigger_callback(source="gpio_trigger")
-            except Exception as e:
+            except (RuntimeError, OSError, TypeError, ValueError) as e:
                 log.error(f"Trigger callback failed: {e}")
 
     def cleanup(self):

@@ -8,11 +8,13 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from runtime.camera_manager import CameraManager
+from runtime.camera_profiles import detect_local_jetson_sensor_model, software_control_capabilities
 from runtime.decision_engine import aggregate_inspection
 from runtime.inference_runner import InferenceRunner
 from runtime.output_driver import JetsonGPIOOutputDriver, MockOutputDriver
@@ -26,7 +28,7 @@ from runtime.model_registry import (
     rollback_active_package,
 )
 from runtime.profile_utils import load_inspection_profile
-from runtime.storage import count_results, load_latest_result, persist_frame_image, persist_result
+from runtime.storage import count_results, load_latest_result, load_result_records, persist_frame_image, persist_result
 
 
 log = logging.getLogger("visiondock.runtime")
@@ -55,6 +57,7 @@ class RuntimeState:
         self.model_adapter = None
         self.active_model = {"name": "No model deployed", "version": "unassigned"}
         self.preview_source = "Not configured"
+        self.detected_sensor_model = ""
         self._setup_driver()
 
     def _build_driver(self):
@@ -88,6 +91,7 @@ class RuntimeState:
         self.camera_manager = CameraManager(self.profile)
         self.preview_source = self.camera_manager.preview_label()
         self.camera_backend = self.camera_manager.backend()
+        self.detected_sensor_model = detect_local_jetson_sensor_model() if self.camera_backend == "jetson_csi_argus" else ""
         self.inference_runner = InferenceRunner(self.profile)
         self.model_adapter = self.inference_runner.adapter_name()
         requested_backend = ((self.profile or {}).get("output_backend") or "mock").strip().lower()
@@ -128,22 +132,19 @@ class RuntimeState:
         except Exception as e:
             log.error(f"Hardware trigger execution failed: {e}")
 
+    def _safe_cleanup(self, resource, name: str):
+        if resource is None:
+            return
+        try:
+            resource.cleanup()
+        except (AttributeError, RuntimeError, OSError) as exc:
+            log.warning("Failed to cleanup %s: %s", name, exc)
+
     def reload(self):
-        try:
-            if self.driver is not None:
-                self.driver.cleanup()
-        except Exception:
-            pass
-        try:
-            if self.input_driver is not None:
-                self.input_driver.cleanup()
-        except Exception:
-            pass
-        try:
-            if self.camera_manager is not None:
-                self.camera_manager.close()
-        except Exception:
-            pass
+        self._safe_cleanup(self.driver, "output driver")
+        self._safe_cleanup(self.input_driver, "input driver")
+        if self.camera_manager is not None:
+            self.camera_manager.close()
         with self._lock:
             self.profile = load_inspection_profile()
             self._setup_driver()
@@ -155,10 +156,12 @@ class RuntimeState:
         return f"inspection-{self.inspection_count + 1:06d}"
 
     def _fault_payload(self, inspection_id: str, trigger_source: str, message: str):
+        camera_name = (self.profile or {}).get("camera_name") or (self.profile or {}).get("station_name") or "Camera System"
         return {
             "inspection_id": inspection_id,
             "captured_at": _iso_now(),
-            "station_name": (self.profile or {}).get("station_name") or "Inspection Station",
+            "camera_name": camera_name,
+            "station_name": camera_name,
             "decision": "fault",
             "defect_classes": ["runtime_fault"],
             "confidence_summary": {"pass": 0.0, "fail": 1.0},
@@ -197,7 +200,7 @@ class RuntimeState:
                 inspection.get("frame_results") or [],
                 profile=self.profile,
                 inspection_id=inspection_id,
-                station_name=(self.profile or {}).get("station_name"),
+                camera_name=(self.profile or {}).get("camera_name") or (self.profile or {}).get("station_name"),
                 trigger_source=trigger_source,
                 active_model=self.active_model,
                 camera_meta=camera_meta,
@@ -239,10 +242,17 @@ class RuntimeState:
     def snapshot(self):
         profile = self.profile or {}
         gpio_cfg = profile.get("gpio") or {}
+        camera_cfg = profile.get("camera") or {}
+        configured_sensor = str(camera_cfg.get("sensor_model") or "GENERIC_CSI").strip().upper() or "GENERIC_CSI"
+        detected_sensor = str(self.detected_sensor_model or "").strip().upper()
+        sensor_match = None
+        if detected_sensor and configured_sensor not in ("", "GENERIC_CSI"):
+            sensor_match = detected_sensor == configured_sensor
         return {
             "status": "ok",
             "runtime_status": self.runtime_status,
-            "station_name": profile.get("station_name"),
+            "camera_name": profile.get("camera_name"),
+            "station_name": profile.get("camera_name") or profile.get("station_name"),
             "board_model": profile.get("board_model"),
             "output_backend": profile.get("output_backend"),
             "effective_output_backend": self.driver_backend,
@@ -257,6 +267,11 @@ class RuntimeState:
             "active_model": dict(self.active_model),
             "preview_source": self.preview_source,
             "camera_backend": self.camera_backend,
+            "camera_sensor_model": configured_sensor,
+            "detected_sensor_model": detected_sensor,
+            "camera_sensor_match": sensor_match,
+            "camera_focuser_type": camera_cfg.get("focuser_type") or "none",
+            "camera_controls": software_control_capabilities(camera_cfg.get("focuser_type") or "none"),
             "model_adapter": self.model_adapter,
         }
 
@@ -287,17 +302,23 @@ class InspectionRequestHandler(BaseHTTPRequestHandler):
         log.info("%s - %s", self.address_string(), fmt % args)
 
     def do_GET(self):
-        if self.path == "/health":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query or "")
+        if path == "/health":
             state = self.state.snapshot()
             payload = {
                 "status": state.get("status"),
                 "runtime_status": state.get("runtime_status"),
-                "station_name": state.get("station_name"),
+                "camera_name": state.get("camera_name"),
                 "board_model": state.get("board_model"),
                 "output_backend": state.get("output_backend"),
                 "effective_output_backend": state.get("effective_output_backend"),
                 "gpio_enabled": state.get("gpio_enabled"),
                 "camera_backend": state.get("camera_backend"),
+                "camera_sensor_model": state.get("camera_sensor_model"),
+                "detected_sensor_model": state.get("detected_sensor_model"),
+                "camera_sensor_match": state.get("camera_sensor_match"),
                 "model_adapter": state.get("model_adapter"),
                 "driver_state": state.get("driver_state"),
                 "last_error": state.get("last_error"),
@@ -307,15 +328,22 @@ class InspectionRequestHandler(BaseHTTPRequestHandler):
             }
             self._reply(payload)
             return
-        if self.path == "/state":
+        if path == "/state":
             self._reply(self.state.snapshot())
             return
-        if self.path == "/config":
+        if path == "/config":
             self._reply(self.state.profile or {})
             return
-        if self.path == "/models":
+        if path == "/models":
             inventory = self.state.package_inventory()
             self._reply({"status": "ok", **inventory})
+            return
+        if path == "/results":
+            try:
+                limit = int((query.get("limit") or ["60"])[0])
+            except (TypeError, ValueError):
+                limit = 60
+            self._reply({"status": "ok", "records": load_result_records(limit=max(1, min(limit, 500)))})
             return
         self._reply({"error": "not_found"}, code=404)
 
@@ -328,8 +356,9 @@ class InspectionRequestHandler(BaseHTTPRequestHandler):
                     self._reply({"status": "deleted", "inspection_id": inspection_id})
                 else:
                     self._reply({"error": "not_found"}, code=404)
-            except Exception as e:
-                self._reply({"error": str(e)}, code=500)
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                log.exception("Result deletion failed for inspection_id=%s", inspection_id)
+                self._reply({"error": str(exc)}, code=500)
             return
         self._reply({"error": "not_found"}, code=404)
 
@@ -422,10 +451,10 @@ def main():
     except KeyboardInterrupt:
         log.info("Inspection runtime shutting down")
     finally:
-        try:
-            state.driver.cleanup()
-        except Exception:
-            pass
+        state._safe_cleanup(state.driver, "output driver")
+        state._safe_cleanup(state.input_driver, "input driver")
+        if state.camera_manager is not None:
+            state.camera_manager.close()
         server.server_close()
 
 
