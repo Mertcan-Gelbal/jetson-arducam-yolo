@@ -1,50 +1,60 @@
 #!/bin/bash
-# Install Systemd Auto-Restart Service for Jetson Arducam AI
-# This enables the AI stack or GUI to start automatically on boot and auto-heal on crash.
+# Install VisionDock Inspection Runtime as a systemd service on Jetson.
+# Run as the user who owns the VisionDock install (sudo required for systemd).
 
-echo "Installing Jetson Arducam Systemd Service..."
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVICE_NAME="jetson-arducam"
+SERVICE_NAME="visiondock-runtime"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+RUNTIME_USER="${1:-$USER}"
 
-# Create Service Definition
-cat <<EOF | sudo tee $SERVICE_PATH > /dev/null
+echo "Installing VisionDock Inspection Runtime service..."
+echo "  Project root : $SCRIPT_DIR"
+echo "  Service user : $RUNTIME_USER"
+
+cat <<EOF | sudo tee "$SERVICE_PATH" > /dev/null
 [Unit]
-Description=Jetson Arducam AI Industrial Edge Service
-After=network.target docker.service nvargus-daemon.service
-Requires=docker.service nvargus-daemon.service
+Description=VisionDock Inspection Runtime
+After=network.target nvargus-daemon.service
+Wants=nvargus-daemon.service
 
 [Service]
 Type=simple
-User=$USER
-Environment=DISPLAY=:0
-Environment=QT_QPA_PLATFORM=xcb
-WorkingDirectory=$SCRIPT_DIR
+User=${RUNTIME_USER}
+WorkingDirectory=${SCRIPT_DIR}
+Environment=PYTHONPATH=${SCRIPT_DIR}
+Environment=VISIONDOCK_LOG_CONSOLE=0
 
-# You can change this to start_gui.sh or your headless analytics script:
-# ExecStart=$SCRIPT_DIR/start_gui.sh
-ExecStart=/usr/bin/python3 $SCRIPT_DIR/examples/basic_detection.py --source-type csi --model yolo11n.pt
+# Start the inspection HTTP service (default: 127.0.0.1:8787)
+# Override host/port as needed: --host 0.0.0.0 --port 8787
+ExecStart=/usr/bin/python3 -m runtime.inspection_service --host 127.0.0.1 --port 8787
 
-# Auto-Restart Logic (Industrial resilience)
-Restart=always
+# Graceful shutdown
+ExecStop=/bin/kill -TERM \$MAINPID
+KillMode=process
+TimeoutStopSec=10
+
+# Auto-restart on failure
+Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=0
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Install]
-WantedBy=graphical.target multi-user.target
+WantedBy=multi-user.target graphical.target
 EOF
 
-# Reload and Enable
 echo "Reloading systemd daemon..."
 sudo systemctl daemon-reload
 
-echo "Enabling $SERVICE_NAME to start on boot..."
-sudo systemctl enable $SERVICE_NAME
+echo "Enabling ${SERVICE_NAME} to start on boot..."
+sudo systemctl enable "${SERVICE_NAME}"
 
-echo "========================================="
-echo "Service Installed Successfully!"
-echo "To start it now:   sudo systemctl start $SERVICE_NAME"
-echo "To check status:   sudo systemctl status $SERVICE_NAME"
-echo "To view logs:      journalctl -u $SERVICE_NAME -f"
-echo "========================================="
+echo "=========================================="
+echo "Service installed: ${SERVICE_NAME}"
+echo "  Start now  : sudo systemctl start ${SERVICE_NAME}"
+echo "  Status     : sudo systemctl status ${SERVICE_NAME}"
+echo "  Logs       : journalctl -u ${SERVICE_NAME} -f"
+echo "  Stop       : sudo systemctl stop ${SERVICE_NAME}"
+echo "=========================================="

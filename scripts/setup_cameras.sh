@@ -468,11 +468,6 @@ setup_csi_camera() {
         echo "  Jetson with a JetPack version that matches an available driver."
         echo "  Use NVIDIA SDK Manager: https://developer.nvidia.com/sdk-manager"
         echo ""
-        echo -e "${CYAN}Option 3: Contact Arducam Support${NC}"
-        echo "  Email: support@arducam.com"
-        echo "  GitHub: https://github.com/ArduCAM/MIPI_Camera/issues"
-        echo "  Include your L4T version and Jetson model in your request."
-        echo ""
         echo -e "${BOLD}=====================================================================${NC}"
         exit 1
     else

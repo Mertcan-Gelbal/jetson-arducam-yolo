@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "station_name": "Sock Inspection Station",
+  "board_model": "JETSON_ORIN_NANO",
+  "output_backend": "mock",
+  "trigger_mode": "manual",
+  "runtime": {
+    "host": "127.0.0.1",
+    "port": 8787
+  },
+  "camera": {
+    "backend": "mock_frame",
+    "sensor_id": 0,
+    "device_index": 0,
+    "capture_width": 1920,
+    "capture_height": 1080,
+    "display_width": 1280,
+    "display_height": 720,
+    "framerate": 30,
+    "flip_method": 0,
+    "aelock": false,
+    "warmup_frames": 4,
+    "frame_skip": 1,
+    "burst_count": 3,
+    "source_path": "",
+    "preview_source_label": "Development mock frame"
+  },
+  "inspection": {
+    "decision_policy": "n_frame_vote",
+    "frame_vote_count": 3,
+    "save_fail_frames": true,
+    "save_uncertain_frames": true,
+    "pass_threshold": 0.35,
+    "fail_threshold": 0.65,
+    "hard_fail_threshold": 0.9,
+    "uncertainty_margin": 0.1,
+    "roi": {
+      "enabled": false,
+      "x": 0.0,
+      "y": 0.0,
+      "width": 1.0,
+      "height": 1.0
+    }
+  },
+  "model": {
+    "name": "No model deployed",
+    "version": "unassigned"
+  },
+  "gpio": {
+    "enabled": false,
+    "active_level": "high",
+    "pass_pin": 15,
+    "fail_pin": 16,
+    "fault_pin": 18,
+    "busy_pin": 33,
+    "trigger_pin": null
+  }
+}

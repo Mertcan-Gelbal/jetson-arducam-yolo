@@ -714,7 +714,7 @@ def build_settings_page(self, helpers):
 
                     copy_btn.clicked.connect(_copy_ssh)
                     prl.addWidget(copy_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
-                    zt_fetch = QPushButton("ZT IP Al")
+                    zt_fetch = QPushButton("Fetch ZT IP")
                     zt_fetch.setObjectName("BtnSecondary")
                     zt_fetch.setFixedHeight(30)
                     zt_fetch.setMinimumWidth(88)

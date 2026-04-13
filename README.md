@@ -34,6 +34,8 @@ chmod +x install.sh
 *   **`install.sh`**: The primary entry point for full-system initialization.
 *   **`Dockerfile`**: Defines the optimized, hardware-accelerated AI environment.
 *   **`gui/`**: Contains **VisionDock Studio**—a professional desktop interface for managing camera streams and AI workspaces.
+*   **`runtime/`**: Contains the inspection runtime skeleton for Jetson-owned camera and GPIO workflows.
+*   **`config/`**: Static config assets such as Jetson pin catalogs and inspection defaults.
 *   **`scripts/`**: Modular utilities for camera setup, image building, and health checks.
 *   **`examples/`**: Production-ready Python templates for inference and spatial analytics.
 
@@ -77,9 +79,8 @@ Include your L4T version (`dpkg-query --showformat='${Version}' --show nvidia-l4
 | [INSTALLATION](docs/INSTALLATION.md) | Install Jetson, camera, Docker |
 | [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Troubleshooting |
 | [CSI cameras & focus](docs/CSI_CAMERA_FOCUS.md) | IMX219/230/477/519 and others — pipeline, I2C focus when motorized |
-| [DEVELOPMENT](docs/DEVELOPMENT.md) | Dev workflow: layout, common files, `~/.visiondock/`, local notes |
-
-Release notes: [CHANGELOG.md](CHANGELOG.md). Private scratch notes: `dev-notes/` (see [dev-notes/README.md](dev-notes/README.md)).
+| [MEDICAL SOCK CAMERA ARCHITECTURE](docs/MEDICAL_SOCK_CAMERA_ARCHITECTURE.md) | Production camera method choice for Jetson + IMX519 |
+| [PRODUCTION DEPLOYMENT](docs/PRODUCTION_DEPLOYMENT.md) | Hardening and deployment instructions for factory-floor lines |
 
 ## Support
 For technical support or commercial inquiries, please refer to the internal documentation in the `docs/` folder or open a GitHub issue. Developed for professional AI engineers and vision researchers.

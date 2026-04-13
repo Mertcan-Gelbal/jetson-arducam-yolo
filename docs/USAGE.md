@@ -68,7 +68,7 @@ python3 examples/multi_camera_detection.py --cameras 0 1 --conf 0.3 --display
 
 ## VisionDock: workspaces directory
 
-Proje kökündeki **`workspaces/`** dizini VisionDock Studio tarafından kullanılır. **Device: Local** ile yeni bir workspace oluşturduğunuzda, uygulama bu dizinin altında workspace adına karşılık gelen bir klasör açar (örn. `workspaces/my_lab`) ve Docker container’ı bu klasörü `/workspace` olarak mount eder. Böylece container içindeki dosyalar doğrudan diskinizde kalır. Remote device seçildiğinde mount kullanılmaz; container uzak cihazda kendi dosya sisteminde çalışır. Bu dizin otomatik oluşturulur ve `.gitignore`’da yer alır (versiyon kontrolüne eklenmez).
+The **`workspaces/`** directory at the project root is used by VisionDock Studio. When you create a new workspace with **Device: Local**, the app creates a folder under this directory using the workspace name (for example `workspaces/my_lab`) and mounts it into the Docker container at `/workspace`. This keeps container files directly on your disk. When a remote device is selected, no local mount is used; the container runs on the remote device file system. This directory is created automatically and is listed in `.gitignore` (not added to version control).
 
 ## Remote Jetson from a development PC
 
