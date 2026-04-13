@@ -154,6 +154,7 @@ from page_inspection import build_inspection_page
 from page_models import build_models_page
 from page_results import build_results_page
 from page_settings import build_settings_page
+from stream_tuning_dialog import open_stream_tuning_dialog_for_card
 from i18n import t
 
 
@@ -1921,113 +1922,13 @@ class ResizableCard(QFrame):
             app.show_toast("Opened Settings")
 
     def _open_stream_tuning_dialog(self):
-        app_win = self.window()
-        if app_win is None or not hasattr(app_win, "_apply_stream_tuning"):
-            return
-        ov = _parse_stream_meta_overrides(getattr(self, "stream_meta", "") or "")
-        cur_wh = ov.get("stream_pv")
-        cur_fps = int(ov.get("stream_max_fps") or 0)
-        src = str(getattr(self, "sub_val", "") or "")
-
-        cached = getattr(self, "_last_native_wh", None)
-        nw = nh = None
-        fps_hint = 0.0
-        if cached and isinstance(cached, (tuple, list)) and len(cached) == 2:
-            try:
-                nw, nh = int(cached[0]), int(cached[1])
-            except (TypeError, ValueError):
-                nw = nh = None
-        if nw is None or nh is None:
-            nw, nh, fps_hint = _probe_stream_native_geometry(src)
-        else:
-            nw, nh, fps_hint = nw, nh, 0.0
-
-        dlg = QDialog(app_win)
-        dlg.setWindowTitle("Stream preview")
-        dlg.setFixedWidth(448)
-        lay = QVBoxLayout(dlg)
-        lay.setSpacing(12)
-        lay.setContentsMargins(18, 18, 18, 16)
-        det = ""
-        if nw and nh:
-            det = f"<br><b>Detected source</b> — {nw}×{nh} (downsized options keep aspect ratio)."
-            if fps_hint >= 5:
-                det += f" Estimated source FPS: ~{fps_hint:.0f}."
-        else:
-            det = (
-                "<br><i>Source resolution could not be measured</i> (network / short timeout). "
-                "Generic 16:9 presets are shown; opening this menu while stream is active usually improves probing."
-            )
-        info = QLabel(
-            "<b>Preview resolution</b> — scales on the <i>client side</i>; "
-            "does not change Jetson encoder output.<br>"
-            "<b>FPS limit</b> — 0 = maximum smoothness; limit when CPU usage is high."
-            + det
+        open_stream_tuning_dialog_for_card(
+            card=self,
+            app_win=self.window(),
+            parse_overrides=_parse_stream_meta_overrides,
+            probe_native_geometry=_probe_stream_native_geometry,
+            preview_resolution_choices=_preview_resolution_choices,
         )
-        info.setWordWrap(True)
-        info.setObjectName("CaptionMuted")
-        info.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(info)
-        combo = QComboBox()
-        combo.setFixedHeight(36)
-        if nw and nh:
-            combo.addItem(f"Full source — {nw}×{nh} (no resampling)", None)
-            for w, h in _preview_resolution_choices(nw, nh):
-                pct = max(1, min(99, int(round(100.0 * w * h / (nw * nh)))))
-                combo.addItem(f"Preview {w}×{h}  (~%{pct})", (w, h))
-        else:
-            combo.addItem("Source — no resize", None)
-            for label, wh in (
-                ("1280 × 720", (1280, 720)),
-                ("960 × 540", (960, 540)),
-                ("854 × 480", (854, 480)),
-                ("640 × 480", (640, 480)),
-                ("640 × 360", (640, 360)),
-            ):
-                combo.addItem(label, wh)
-        if cur_wh and len(cur_wh) == 2:
-            found = False
-            for i in range(combo.count()):
-                d = combo.itemData(i)
-                if d is not None and d[0] == cur_wh[0] and d[1] == cur_wh[1]:
-                    found = True
-                    break
-            if not found:
-                w, h = int(cur_wh[0]), int(cur_wh[1])
-                combo.addItem(f"Saved setting {w}×{h}", (w, h))
-        sel_ix = 0
-        for i in range(combo.count()):
-            d = combo.itemData(i)
-            if d is None and cur_wh is None:
-                sel_ix = i
-                break
-            if d is not None and cur_wh is not None and d[0] == cur_wh[0] and d[1] == cur_wh[1]:
-                sel_ix = i
-                break
-        combo.setCurrentIndex(sel_ix)
-        lay.addWidget(QLabel("Preview resolution"))
-        lay.addWidget(combo)
-        lay.addWidget(QLabel("Target FPS limit (0 = unlimited)"))
-        spin = QSpinBox()
-        spin.setRange(0, 120)
-        if fps_hint >= 8:
-            spin.setMaximum(max(120, int(fps_hint) + 20))
-            spin.setToolTip(f"Source reported ~{fps_hint:.0f} fps; tune upper limit accordingly.")
-        spin.setValue(cur_fps)
-        spin.setFixedHeight(36)
-        lay.addWidget(spin)
-        bb = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        ok_b = bb.button(QDialogButtonBox.StandardButton.Ok)
-        ok_b.setText("Apply")
-        ok_b.setObjectName("BtnPrimary")
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        lay.addWidget(bb)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        app_win._apply_stream_tuning(self, combo.currentData(), spin.value())
 
     def _open_focus_dialog(self):
         """Floating focus dialog; colors follow ThemeOps (same layers as main UI)."""
@@ -2808,28 +2709,44 @@ class ThemeOps:
         QSlider::groove:horizontal {{ height: 6px; background: {brd}; border-radius: 4px; }}
         QSlider::handle:horizontal {{ width: 20px; height: 20px; margin: -7px 0; background: {accent}; border-radius: 10px; border: 2px solid {card}; }}
         QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 4px; height: 6px; }}
-        QPushButton#NavTab {{ border: 1px solid transparent; border-radius: 12px; text-align: left; padding: 13px 18px; color: {nav_idle}; font-weight: 680; font-size: 13px; letter-spacing: 0.10px; min-height: 46px; }}
+        QPushButton#NavTab {{
+            border: 1px solid transparent;
+            border-radius: 12px;
+            text-align: left;
+            padding: 12px 16px;
+            color: {nav_idle};
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: 0.12px;
+            min-height: 44px;
+            background-color: transparent;
+        }}
         QPushButton#NavTab[compact="true"] {{
             text-align: center;
-            padding: 12px 8px;
+            padding: 10px 6px;
             font-size: 12px;
-            font-weight: 760;
-            letter-spacing: 0.4px;
-            min-height: 44px;
-            min-width: 58px;
+            font-weight: 780;
+            letter-spacing: 0.48px;
+            min-height: 42px;
+            min-width: 56px;
+            border-radius: 11px;
         }}
         QPushButton#NavTab:checked {{
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {accent}, stop:0.60 {accent_vivid}, stop:1 {accent_deep});
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {accent}, stop:0.55 {accent_vivid}, stop:1 {accent_deep});
             color: #FFFFFF !important;
-            border: 1px solid rgba(255,255,255,0.20);
-            border-left: 2px solid rgba(255,255,255,0.55);
+            border: 1px solid rgba(255,255,255,0.17);
+            border-left: 3px solid rgba(255,255,255,0.58);
             font-weight: 800;
         }}
         QPushButton#NavTab[compact="true"]:checked {{
             border-left: 1px solid rgba(255,255,255,0.24);
             border-bottom: 2px solid rgba(255,255,255,0.60);
         }}
-        QPushButton#NavTab:hover:!checked {{ background-color: {hov}; color: {txt}; border: 1px solid {pop_edge}; }}
+        QPushButton#NavTab:hover:!checked {{
+            background-color: {hov};
+            color: {txt};
+            border: 1px solid {pop_edge};
+        }}
         QPushButton#SidebarToggle {{
             border: 1px solid {pop_edge};
             border-radius: 10px;
@@ -4070,7 +3987,7 @@ class App(QMainWindow):
         self._camera_preview_enabled_sources = set()
         self._sidebar_compact = bool(prefs.get("sidebar_compact", True))
         self._sidebar_width_compact = 108
-        self._sidebar_width_expanded = 286
+        self._sidebar_width_expanded = 304
         self._nav_specs = []
         self._auto_camera_preview_on_launch = bool(prefs.get("auto_camera_preview_on_launch", False))
         self._background_health_checks_enabled = bool(prefs.get("background_health_checks_enabled", False))
@@ -4090,6 +4007,9 @@ class App(QMainWindow):
         self._devices_last_scan_ts = 0.0
         self._devices_scan_ttl_sec = 45.0
         self._devices_auto_refresh_enabled = bool(prefs.get("devices_auto_refresh_enabled", False))
+        self._devices_auto_refresh_interval_sec = int(prefs.get("devices_auto_refresh_interval_sec", 60) or 60)
+        if self._devices_auto_refresh_interval_sec not in (30, 60, 120):
+            self._devices_auto_refresh_interval_sec = 60
         self._inspection_runtime_state = {}
         self._inspection_runtime_online = None
         self._inspection_runtime_last_error = ""
@@ -4122,7 +4042,7 @@ class App(QMainWindow):
             self._apply_scheduler_policy(self._scheduler_policy, persist=False, notify=False)
         self._apply_background_health_checks_policy(run_initial_check=True)
         self._devices_auto_refresh_timer = QTimer(self)
-        self._devices_auto_refresh_timer.setInterval(60000)
+        self._devices_auto_refresh_timer.setInterval(self._devices_auto_refresh_interval_sec * 1000)
         self._devices_auto_refresh_timer.timeout.connect(self._on_devices_auto_refresh_tick)
         self._apply_devices_auto_refresh_policy()
         self._setup_shortcuts()
@@ -4323,7 +4243,7 @@ class App(QMainWindow):
             if refresh_labels:
                 full_label = str(btn.property("navLabel") or "").strip()
                 indicator = str(btn.property("navIndicator") or "").strip()
-                btn.setText(indicator if compact else full_label)
+                btn.setText(indicator if compact else f"{indicator}   {full_label}")
                 btn.setToolTip(full_label)
             btn.setProperty("compact", compact)
             bstyle = btn.style()
@@ -4458,6 +4378,7 @@ class App(QMainWindow):
         timer = getattr(self, "_devices_auto_refresh_timer", None)
         if timer is None:
             return
+        timer.setInterval(max(30, int(getattr(self, "_devices_auto_refresh_interval_sec", 60))) * 1000)
         if bool(getattr(self, "_devices_auto_refresh_enabled", False)):
             if not timer.isActive():
                 timer.start()
@@ -4477,10 +4398,23 @@ class App(QMainWindow):
         save_app_prefs_flag("devices_auto_refresh_enabled", self._devices_auto_refresh_enabled)
         self._apply_devices_auto_refresh_policy()
         self.notify_info(
-            "Devices auto-refresh enabled (1 minute interval)."
+            f"Devices auto-refresh enabled ({int(getattr(self, '_devices_auto_refresh_interval_sec', 60))} sec interval)."
             if self._devices_auto_refresh_enabled
             else "Devices auto-refresh disabled."
         )
+
+    def set_devices_auto_refresh_interval(self, seconds: int):
+        try:
+            sec = int(seconds)
+        except (TypeError, ValueError):
+            sec = 60
+        if sec not in (30, 60, 120):
+            sec = 60
+        self._devices_auto_refresh_interval_sec = sec
+        save_app_prefs_value("devices_auto_refresh_interval_sec", sec)
+        self._apply_devices_auto_refresh_policy()
+        if bool(getattr(self, "_devices_auto_refresh_enabled", False)):
+            self.notify_info(f"Devices auto-refresh interval set to {sec} sec.")
 
     def set_ui_role_mode(self, role: str):
         role_norm = str(role or "").strip().lower()
@@ -5980,7 +5914,8 @@ class App(QMainWindow):
                 f"Checks: {'On' if getattr(self, '_background_health_checks_enabled', False) else 'Off'} • "
                 f"Auto preview: {'On' if getattr(self, '_auto_camera_preview_on_launch', False) else 'Off'} • "
                 f"Settings check: {'On' if getattr(self, '_check_remote_on_settings_open', False) else 'Off'} • "
-                f"Devices auto-refresh: {'On' if getattr(self, '_devices_auto_refresh_enabled', False) else 'Off'} • "
+                f"Devices auto-refresh: {'On' if getattr(self, '_devices_auto_refresh_enabled', False) else 'Off'} "
+                f"({int(getattr(self, '_devices_auto_refresh_interval_sec', 60))}s) • "
                 f"Setup on launch: {'On' if getattr(self, '_show_setup_wizard_on_launch', False) else 'Off'}"
             )
         eco_switch = getattr(self, "_maintenance_eco_switch", None)
@@ -5998,6 +5933,16 @@ class App(QMainWindow):
             devices_refresh_switch.blockSignals(True)
             devices_refresh_switch.setChecked(bool(getattr(self, "_devices_auto_refresh_enabled", False)))
             devices_refresh_switch.blockSignals(False)
+        devices_refresh_interval_combo = getattr(self, "_maintenance_devices_auto_refresh_interval_combo", None)
+        if devices_refresh_interval_combo is not None:
+            target_interval = int(getattr(self, "_devices_auto_refresh_interval_sec", 60) or 60)
+            idx = devices_refresh_interval_combo.findData(target_interval)
+            if idx < 0:
+                idx = devices_refresh_interval_combo.findData(60)
+            if idx >= 0 and devices_refresh_interval_combo.currentIndex() != idx:
+                devices_refresh_interval_combo.blockSignals(True)
+                devices_refresh_interval_combo.setCurrentIndex(idx)
+                devices_refresh_interval_combo.blockSignals(False)
         setup_wizard_switch = getattr(self, "_maintenance_setup_wizard_on_launch_switch", None)
         if setup_wizard_switch is not None and setup_wizard_switch.isChecked() != bool(getattr(self, "_show_setup_wizard_on_launch", False)):
             setup_wizard_switch.blockSignals(True)
@@ -7597,6 +7542,7 @@ class App(QMainWindow):
                 "confirm_engineering_mode_switch": bool(getattr(self, "_confirm_engineering_mode_switch", True)),
                 "operator_quick_tour_seen": bool(getattr(self, "_operator_quick_tour_seen", False)),
                 "devices_auto_refresh_enabled": bool(getattr(self, "_devices_auto_refresh_enabled", False)),
+                "devices_auto_refresh_interval_sec": int(getattr(self, "_devices_auto_refresh_interval_sec", 60) or 60),
                 "show_setup_wizard_on_launch": bool(getattr(self, "_show_setup_wizard_on_launch", False)),
             },
         }
@@ -7657,6 +7603,14 @@ class App(QMainWindow):
         if "devices_auto_refresh_enabled" in ui_state:
             self._devices_auto_refresh_enabled = bool(ui_state.get("devices_auto_refresh_enabled"))
             save_app_prefs_flag("devices_auto_refresh_enabled", self._devices_auto_refresh_enabled)
+        if "devices_auto_refresh_interval_sec" in ui_state:
+            try:
+                self._devices_auto_refresh_interval_sec = int(ui_state.get("devices_auto_refresh_interval_sec"))
+            except (TypeError, ValueError):
+                self._devices_auto_refresh_interval_sec = 60
+            if self._devices_auto_refresh_interval_sec not in (30, 60, 120):
+                self._devices_auto_refresh_interval_sec = 60
+            save_app_prefs_value("devices_auto_refresh_interval_sec", self._devices_auto_refresh_interval_sec)
         if "show_setup_wizard_on_launch" in ui_state:
             self._show_setup_wizard_on_launch = bool(ui_state.get("show_setup_wizard_on_launch"))
             save_app_prefs_flag("show_setup_wizard_on_launch", self._show_setup_wizard_on_launch)

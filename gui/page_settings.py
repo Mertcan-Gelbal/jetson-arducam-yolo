@@ -437,7 +437,20 @@ def build_settings_page(self, helpers):
     devrefresh_row.addWidget(devrefresh_l)
     self._maintenance_devices_auto_refresh_switch = ToggleSwitch()
     self._maintenance_devices_auto_refresh_switch.toggled.connect(self.toggle_devices_auto_refresh)
+    self._maintenance_devices_auto_refresh_interval_combo = QComboBox()
+    self._maintenance_devices_auto_refresh_interval_combo.setView(QListView())
+    self._maintenance_devices_auto_refresh_interval_combo.setFixedHeight(34)
+    self._maintenance_devices_auto_refresh_interval_combo.setMaximumWidth(136)
+    self._maintenance_devices_auto_refresh_interval_combo.addItem("30 sec", 30)
+    self._maintenance_devices_auto_refresh_interval_combo.addItem("60 sec", 60)
+    self._maintenance_devices_auto_refresh_interval_combo.addItem("120 sec", 120)
+    self._maintenance_devices_auto_refresh_interval_combo.currentIndexChanged.connect(
+        lambda _i: self.set_devices_auto_refresh_interval(
+            int(self._maintenance_devices_auto_refresh_interval_combo.currentData() or 60)
+        )
+    )
     devrefresh_row.addStretch()
+    devrefresh_row.addWidget(self._maintenance_devices_auto_refresh_interval_combo)
     devrefresh_row.addWidget(self._maintenance_devices_auto_refresh_switch)
     advanced.addLayout(devrefresh_row)
     pref_l.addWidget(advanced)
@@ -462,6 +475,14 @@ def build_settings_page(self, helpers):
     self._maintenance_devices_auto_refresh_switch.blockSignals(True)
     self._maintenance_devices_auto_refresh_switch.setChecked(bool(getattr(self, "_devices_auto_refresh_enabled", False)))
     self._maintenance_devices_auto_refresh_switch.blockSignals(False)
+    self._maintenance_devices_auto_refresh_interval_combo.blockSignals(True)
+    _interval_target = int(getattr(self, "_devices_auto_refresh_interval_sec", 60) or 60)
+    _interval_idx = self._maintenance_devices_auto_refresh_interval_combo.findData(_interval_target)
+    if _interval_idx < 0:
+        _interval_idx = self._maintenance_devices_auto_refresh_interval_combo.findData(60)
+    if _interval_idx >= 0:
+        self._maintenance_devices_auto_refresh_interval_combo.setCurrentIndex(_interval_idx)
+    self._maintenance_devices_auto_refresh_interval_combo.blockSignals(False)
     maintenance_card_l.addWidget(pref_card)
     maintenance_l.addWidget(maintenance_card)
 
@@ -699,7 +720,7 @@ def build_settings_page(self, helpers):
                     zt_fetch.setMinimumWidth(88)
                     zt_fetch.setCursor(Qt.CursorShape.PointingHandCursor)
                     zt_fetch.setToolTip(
-                        "Path IP üzerinden SSH ile uzak zerotier-cli çalıştırır; sanal IP Devices sekmesinde görünür."
+                        "Runs zerotier-cli over SSH using the path IP; discovered virtual IP is shown in Devices."
                     )
                     zt_fetch.clicked.connect(
                         lambda _v=False, pip=peer_ip, aid=addr: self._fetch_peer_zt_virtual_ips(
