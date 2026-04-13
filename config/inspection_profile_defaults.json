@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "station_name": "Sock Inspection Station",
+  "camera_name": "VisionDock Inspection Station",
   "board_model": "JETSON_ORIN_NANO",
   "output_backend": "mock",
   "trigger_mode": "manual",
@@ -10,6 +10,8 @@
   },
   "camera": {
     "backend": "mock_frame",
+    "sensor_model": "GENERIC_CSI",
+    "focuser_type": "none",
     "sensor_id": 0,
     "device_index": 0,
     "capture_width": 1920,
@@ -26,6 +28,21 @@
     "preview_source_label": "Development mock frame"
   },
   "inspection": {
+    "profile_name": "default_project",
+    "recipe_name": "default_recipe",
+    "product_label": "Inspection target",
+    "expected_object_label": "target",
+    "pass_display_label": "Pass",
+    "review_display_label": "Review required",
+    "fail_display_label": "Fail",
+    "defect_catalog": [
+      "missing_target",
+      "low_texture_or_missing_target",
+      "alignment_or_surface_noise",
+      "blur_or_out_of_focus",
+      "underexposed_frame",
+      "overexposed_frame"
+    ],
     "decision_policy": "n_frame_vote",
     "frame_vote_count": 3,
     "save_fail_frames": true,
@@ -40,6 +57,13 @@
       "y": 0.0,
       "width": 1.0,
       "height": 1.0
+    },
+    "heuristic": {
+      "min_laplacian_var": 60.0,
+      "min_mean_intensity": 55.0,
+      "max_mean_intensity": 205.0,
+      "min_edge_density": 0.01,
+      "max_edge_density": 0.22
     }
   },
   "model": {

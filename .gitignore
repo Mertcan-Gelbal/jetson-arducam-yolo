@@ -28,6 +28,7 @@ venv/
 ENV/
 env/
 .venv
+.venv_gui/
 
 # PyTorch
 *.pth
@@ -81,6 +82,10 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+.codex_tmp/
+fix_dashboard_vnext.py
+fix_network_lag.py
+restore_pages.py
 
 # YOLOv8 specific
 ultralytics_cache/

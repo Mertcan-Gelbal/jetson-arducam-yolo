@@ -6,17 +6,27 @@ VisionDock targets **NVIDIA Jetson + Arducam (or compatible) MIPI CSI** modules.
 
 ---
 
-## Sensor overview (typical use)
+## Sensor overview
 
 | Sensor | Notes |
 |--------|--------|
-| **IMX219** | Common 8MP module; usually **fixed focus** — no I2C focus motor in standard kits. |
+| **IMX219** | 8MP sensor family. Arducam ships fixed-focus, manual-focus, motorized-focus, and PTZ variants on this sensor; do not infer focus or zoom from the sensor name alone. |
 | **IMX230** | Treat like other Arducam/Jetson CSI sensors: match **driver + `install_full.sh -m …`** to Arducam’s matrix for your L4T; focus only if your **specific SKU** includes a motor. |
-| **IMX477** | 12MP HQ-style; often **fixed** unless you bought a **motorized** variant. |
-| **IMX519** | 16MP; **motorized focus** kits are common — this repo’s `focus_imx519.py` / GUI focus UI are aimed at that I2C pattern. |
+| **IMX477** | 12MP sensor family often paired with interchangeable **M12 / CS / C-mount** lenses. Focus and aperture are usually lens-side decisions; some motorized and PTZ variants also exist. |
+| **IMX519** | 16MP sensor family with many autofocus stock-lens modules. Autofocus is common, but still SKU-dependent; sensor name alone does not guarantee zoom or iris control. |
 | **IMX708**, **OV9281**, **OV7251** | CSI image via the same Jetson stack; focus only if the hardware supports it. |
 
-Always confirm **your exact Arducam SKU** (fixed vs motorized) and **L4T** match on [Arducam MIPI_Camera releases](https://github.com/ArduCAM/MIPI_Camera/releases).
+Always confirm **your exact Arducam SKU** (fixed vs manual vs motorized vs PTZ) and **L4T** match on [Arducam MIPI_Camera releases](https://github.com/ArduCAM/MIPI_Camera/releases).
+
+## Product rule
+
+For this quality-control product, a daily operator should **not** decide raw CSI sensor family. That is commissioning metadata. The Jetson runtime should report the installed sensor family, and engineering should lock the focus/lens setup before production.
+
+Focus, zoom, and aperture are different things:
+
+- **Focus** may be fixed, manual, or motorized depending on the module SKU.
+- **Optical zoom** exists only on special zoom-lens or PTZ kits; it is not implied by IMX219 / IMX477 / IMX519.
+- **Aperture / iris** is typically a property of the attached lens. On HQ-style IMX477 systems it is often manual on the lens, not a normal software control exposed to operators.
 
 ---
 
@@ -50,7 +60,8 @@ Wrong bus is the most common failure. Use the **same** bus in Settings and in th
 ## VisionDock / GUI
 
 - Run from repo root: `./start_gui.sh`
-- **Settings → Camera defaults (CSI / Jetson):** resolution, AE lock, exposure/gain apply to the CSI path; **I2C bus**, **CSI sensor-id**, and **focus modes** matter when you have a **motorized** module compatible with the bundled scripts.
+- **Settings → Camera defaults:** engineering-only commissioning area. Sensor family is used for validation and recommended defaults; it should stay locked in operator mode.
+- **Settings → Inspection camera:** sensor family is commissioning metadata. Runtime detection should confirm what is physically installed on the Jetson.
 - **Focus…** on a physical card: quick position + bus (no effect on fixed-lens cameras except harmless I2C attempts if misconfigured).
 - Saved settings: `~/.visiondock/camera_defaults.json`
 

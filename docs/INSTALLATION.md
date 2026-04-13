@@ -111,14 +111,19 @@ chmod +x install_full.sh
 You should see a list including:
 - imx219
 - imx477
-- **imx519** ← We'll install this one
+- imx519
 - ov9281
 - etc.
 
-### 3. Install IMX519 Driver
+### 3. Install The Driver For Your CSI Module
 
 ```bash
-# Install the IMX519 camera driver
+# Install the driver that matches your module
+# Examples:
+sudo ./install_full.sh -m imx219
+# or
+sudo ./install_full.sh -m imx477
+# or
 sudo ./install_full.sh -m imx519
 
 # System will prompt for confirmation
@@ -453,7 +458,7 @@ After successful installation:
 **Solution:**
 ```bash
 # Check kernel messages
-dmesg | grep -i imx519
+dmesg | grep -Ei 'imx219|imx477|imx519|ov9281|arducam'
 
 # Restart nvargus daemon
 sudo systemctl restart nvargus-daemon

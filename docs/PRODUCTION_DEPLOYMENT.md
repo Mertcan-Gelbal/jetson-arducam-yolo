@@ -9,7 +9,7 @@ In production, the Jetson device runs the `visiondock-runtime` service automatic
 ## 1. System Requirements Check
 
 Ensure your Jetson meets the requirements for a headless inspection station:
-1. Arducam IMX drivers or USB camera successfully installed.
+1. The correct CSI driver for your module (for example IMX219, IMX477, or IMX519) or a supported USB camera is installed.
 2. `~/.visiondock` directory initialized.
 3. Relevant models (e.g., YOLO ONNX or TensorRT engine) exported and activated via the GUI.
 
@@ -52,7 +52,7 @@ For operator-initiated inspections, wire a pedal or button to a Jetson GPIO pin.
 - Pull-up resistor circuit (Jetson internal pull-up is utilized).
 - Trigger edge: `falling` (Connecting the pin to ground).
 
-Enable the input logic using the GUI's `Settings -> Inspection Card` or in `~/.visiondock/inspection_profile.json`:
+Enable the input logic using the GUI's `Settings -> Inspection camera` card. Sensor family and focus actuator are commissioning metadata and should be left locked for daily operators. The runtime profile is stored in `~/.visiondock/inspection_profile.json`:
 ```json
 "gpio": {
   "enabled": true,
@@ -73,8 +73,8 @@ Once the Jetson is in production, operators monitor the flow using a standard x8
 
 1. In the GUI, navigate to `Devices`.
 2. Add the Jetson's local IP (e.g., `192.168.1.50`).
-3. Switch to the `Stations` page and click **Connect**.
-4. Set the app to Production Mode by starting it with `VISIONDOCK_PRODUCTION=1 python3 main.py` to prevent operators from accidentally deleting models.
+3. Switch to the `Inspection` page to monitor runtime state and manual triggers.
+4. Set the app to Production Mode by starting it with `VISIONDOCK_PRODUCTION=1 ./start_gui.sh` to prevent operators from accidentally deleting models.
 
 ## 6. Logs & Diagnostics
 
