@@ -1,10 +1,14 @@
-import sys, os, re, psutil, subprocess, cv2, time, platform, numpy as np, glob, random, string, threading, json, sqlite3, logging, socket, shlex
+import sys, os, re, psutil, subprocess, cv2, time, platform, numpy as np, glob, random, string, threading, json, sqlite3, logging, socket, shlex, posixpath
 import urllib.request, urllib.error
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 from datetime import datetime
 
 APP_VERSION = "2.0.0"
 from logging.handlers import RotatingFileHandler
+
+_GUI_DIR = os.path.dirname(os.path.abspath(__file__))
+if _GUI_DIR not in sys.path:
+    sys.path.insert(0, _GUI_DIR)
 
 
 def _env_truthy(name: str) -> bool:
@@ -101,7 +105,8 @@ from PySide6.QtWidgets import (
     QScrollArea, QGridLayout, QComboBox, QFileDialog,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QAbstractButton, QSizePolicy, QFormLayout, QLayout,
     QGraphicsBlurEffect, QMenu, QTabWidget, QLineEdit, QPlainTextEdit, QMessageBox,
-    QSlider, QListView, QSpinBox, QDialog, QDialogButtonBox, QStyle, QSplashScreen,
+    QSlider, QListView, QSpinBox, QDoubleSpinBox, QDialog, QDialogButtonBox, QStyle, QSplashScreen,
+    QCheckBox,
     QToolTip, QToolButton,
 )
 
@@ -114,6 +119,42 @@ from PySide6.QtGui import (
     QCursor, QShowEvent, QResizeEvent, QMouseEvent, QTextCursor, QDesktopServices, QPalette, QShortcut,
 )
 # PySide6: use scripts/build_release.py hidden imports for PyInstaller
+
+from runtime.package_loader import (
+    build_package_from_workspace,
+    get_package as get_local_model_package,
+    list_packages as list_local_model_packages,
+    packages_root_dir as local_model_packages_root_dir,
+    scan_workspace_candidates,
+)
+from runtime.model_registry import (
+    activate_package as activate_local_model_package,
+    get_active_package as get_local_active_model_package,
+    rollback_active_package as rollback_local_model_package,
+)
+from runtime.inspection_profile_controller import (
+    build_profile_from_ui,
+    normalize_loaded_profile,
+    validate_profile,
+)
+from runtime.camera_profiles import (
+    csi_sensor_default_focuser,
+    csi_sensor_default_resolution_index,
+    csi_sensor_label,
+    csi_sensor_note,
+    csi_sensor_profiles,
+    csi_sensor_recommended_capture,
+    focus_scripts_for_focuser,
+    focuser_available,
+    focuser_label,
+    focuser_note,
+    focuser_profiles,
+)
+from page_inspection import build_inspection_page
+from page_models import build_models_page
+from page_results import build_results_page
+from page_settings import build_settings_page
+from i18n import t
 
 
 def camera_recordings_slug(display_name) -> str:
@@ -128,6 +169,73 @@ def camera_recordings_slug(display_name) -> str:
 
 def recordings_root_dir() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+
+
+def workspaces_root_dir() -> str:
+    path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "workspaces"))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def workspace_dir_for_name(name: str) -> str:
+    return os.path.join(workspaces_root_dir(), str(name or "").strip())
+
+
+def inspection_results_root_dir() -> str:
+    path = os.path.join(os.path.expanduser("~"), ".visiondock", "results")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def inspection_results_index_path() -> str:
+    return os.path.join(inspection_results_root_dir(), "index.jsonl")
+
+
+def inspection_latest_result_path() -> str:
+    return os.path.join(inspection_results_root_dir(), "latest.json")
+
+
+def load_inspection_result_records(limit=None):
+    path = inspection_results_index_path()
+    if not os.path.exists(path):
+        return []
+    rows = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    item = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict):
+                    rows.append(item)
+    except Exception:
+        return []
+    rows.reverse()
+    if limit is not None:
+        try:
+            rows = rows[: max(0, int(limit))]
+        except (TypeError, ValueError):
+            pass
+    return rows
+
+
+def load_runtime_result_records(url: str, limit=60):
+    if not url:
+        return []
+    query = urlencode({"limit": max(1, int(limit or 60))})
+    sep = "&" if "?" in url else "?"
+    req = urllib.request.Request(f"{url}{sep}{query}", headers={"User-Agent": f"VisionDock/{APP_VERSION}"}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+        records = payload.get("records") if isinstance(payload, dict) else []
+        return records if isinstance(records, list) else []
+    except Exception:
+        return []
 
 
 # Snapshots / REC / common library extensions only (ignore .DS_Store, sidecars, etc.)
@@ -382,23 +490,20 @@ def get_gpu_info():
 
 def list_cameras():
     cams = []
-    # Linux-specific fast discovery
     if platform.system() == "Linux":
-        for d in glob.glob('/dev/video*'):
+        for d in sorted(glob.glob('/dev/video*')):
             try:
                 idx = int(d.replace('/dev/video','').strip())
-                if idx < 10: cams.append((f"Camera {idx} ({d})", idx))
+                if idx % 2 != 0 and idx > 0: continue
+                name = f"Internal CSI Camera {idx}" if idx < 2 else f"External USB Camera {idx}"
+                cams.append((name, idx))
             except: pass
-        if cams: return cams
-
-    # Platform-agnostic silent probing
-    for i in range(1):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            ret, _ = cap.read()
-            if ret:
-                cams.append((f"Camera {i} (default)", i))
-            cap.release()
+    if not cams:
+        for i in range(2):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                cams.append((f"Local Camera {i}", i))
+                cap.release()
     return cams
 
 def get_zerotier_networks():
@@ -1048,6 +1153,48 @@ class RemoteNodeStatusThread(QThread):
         self.status_signal.emit(ok)
 
 
+class InspectionRuntimeRequestThread(QThread):
+    result_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, url: str, method="GET", payload=None, timeout=3.0):
+        super().__init__()
+        self.url = str(url or "").strip()
+        self.method = (method or "GET").strip().upper() or "GET"
+        self.payload = payload if isinstance(payload, dict) else None
+        self.timeout = max(0.5, float(timeout or 3.0))
+
+    def run(self):
+        if not self.url:
+            self.error_signal.emit("Runtime URL is empty.")
+            return
+        headers = {"User-Agent": f"VisionDock/{APP_VERSION}"}
+        body = None
+        if self.payload is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(self.payload).encode("utf-8")
+        req = urllib.request.Request(self.url, data=body, headers=headers, method=self.method)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw or "{}")
+            if not isinstance(data, dict):
+                raise ValueError("Runtime response is not a JSON object.")
+            self.result_signal.emit(data)
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            self.error_signal.emit(detail or f"HTTP {exc.code}")
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", None)
+            self.error_signal.emit(str(reason or exc))
+        except Exception as exc:
+            self.error_signal.emit(str(exc))
+
+
 # =============================================================================
 #  CUSTOM WIDGETS
 # =============================================================================
@@ -1285,7 +1432,7 @@ class DonutChart(QWidget):
 
 class CardResizeHandle(QWidget):
     """Sağ alt köşede kart boyutunu sürükleyerek değiştirir; metin/tooltip yok, sadece hafif çizgiler."""
-    GRIP = 22
+    GRIP = 32
 
     def __init__(self, card: "ResizableCard", overlay_parent: QWidget):
         super().__init__(overlay_parent)
@@ -1326,13 +1473,13 @@ class CardResizeHandle(QWidget):
         wnd = self.window()
         if wnd is not None:
             dark = getattr(wnd, "is_dark", True)
-        mid = QColor(self.palette().color(QPalette.ColorRole.Mid))
-        mid.setAlpha(130 if dark else 100)
-        p.setPen(QPen(mid, 1.2))
-        margin = 5
+        mid = QColor("#FFFFFF") if dark else QColor("#000000")
+        mid.setAlpha(255 if dark else 200)
+        p.setPen(QPen(mid, 2.0))
+        margin = 0
         for i in range(3):
-            d = margin + i * 3
-            p.drawLine(w - d, h - margin, w - margin, h - d)
+            d = margin + i * 5
+            p.drawLine(w - d, h - 2, w - 2, h - d)
 
 
 class ResizableCard(QFrame):
@@ -1385,6 +1532,12 @@ class ResizableCard(QFrame):
             self.ai_btn.clicked.connect(self._show_ai_launch_menu); hl.addWidget(self.ai_btn)
         else:
             self._is_physical_camera = str(sub).split("|")[0].strip() == "Physical" if (sub and "|" in str(sub)) else False
+            self.preview_btn = QPushButton("Start")
+            self.preview_btn.setFixedSize(74, 32)
+            self.preview_btn.setObjectName("BtnSecondary")
+            self.preview_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.preview_btn.clicked.connect(self.toggle_preview_stream)
+            hl.addWidget(self.preview_btn)
             self.snap_btn = QPushButton("Snapshot"); self.snap_btn.setFixedSize(98, 32); self.snap_btn.setObjectName("CardHeaderAction")
             self.snap_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.snap_btn.clicked.connect(self.take_snapshot); hl.addWidget(self.snap_btn)
@@ -1398,13 +1551,13 @@ class ResizableCard(QFrame):
         self.cnt = QWidget()
         self.cnt.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         cl = QVBoxLayout(self.cnt)
-        cl.setContentsMargins(12, 10, 12, 12)
+        cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(6)
         l.addWidget(self.cnt, 1)
         if is_docker:
             # Industrial Metadata Grid with Clean Identifier
             icon_box = QHBoxLayout(); icon_box.setSpacing(10)
-            self.ico_lbl = QLabel("ID"); self.ico_lbl.setObjectName("AccentBadge"); self.ico_lbl.setFixedSize(36,36); self.ico_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.ico_lbl = QLabel("◈"); self.ico_lbl.setObjectName("AccentBadge"); self.ico_lbl.setFixedSize(36,36); self.ico_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             
             v_meta = QVBoxLayout(); v_meta.setSpacing(2)
             tag_display = (sub[:25] + "...") if len(sub) > 25 else sub
@@ -1458,13 +1611,13 @@ class ResizableCard(QFrame):
             vwl = QVBoxLayout(self._video_well)
             vwl.setContentsMargins(6, 6, 6, 6)
             vwl.setSpacing(0)
-            self.view = QLabel("Starting feed..."); self.view.setObjectName("PreviewArea"); self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.view = QLabel("Preview paused. Click Start."); self.view.setObjectName("PreviewArea"); self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             self.view.setMinimumSize(1, 1)
             self._video_well.setMinimumHeight(200)
             vwl.addWidget(self.view)
             cl.addWidget(self._video_well, 1)
-            self.grip = CardResizeHandle(self, self._video_well)
+            self.grip = CardResizeHandle(self, self)
             self._video_well.installEventFilter(self)
 
     def _sync_card_shadow(self):
@@ -1523,8 +1676,8 @@ class ResizableCard(QFrame):
         if g is None or well is None:
             return
         sz = CardResizeHandle.GRIP
-        g.move(max(0, well.width() - sz), max(0, well.height() - sz))
-        g.raise_()
+        g.move(self.width() - sz - 5, self.height() - sz - 5)
+        g.raise_(); g.show()
 
     def resizeEvent(self, e):
         self._position_resize_handle()
@@ -1571,6 +1724,8 @@ class ResizableCard(QFrame):
             app = self.window()
             if app is not None and hasattr(app, "forget_camera_card_geom") and getattr(self, "sub_val", None):
                 app.forget_camera_card_geom(self.sub_val)
+            if app is not None and hasattr(app, "_refresh_camera_preview_summary"):
+                app._refresh_camera_preview_summary()
         self.removed.emit()
     def set_status_info(self, text, color):
         self.s_dot.setStyleSheet(f"color: {color}; font-size: 10px; border:none; background:transparent;")
@@ -1655,6 +1810,18 @@ class ResizableCard(QFrame):
         }
         color, text = colors.get(status, ("#8E8E93", status.upper()))
         self.set_status_info(text, color)
+        if hasattr(self, "preview_btn"):
+            self.preview_btn.setText("Stop" if status == "connected" else "Start")
+
+    def toggle_preview_stream(self):
+        app = self.window()
+        if app is None:
+            return
+        is_running = bool(getattr(self, "t", None) and getattr(self.t, "isRunning", lambda: False)())
+        if is_running and hasattr(app, "_stop_camera_preview"):
+            app._stop_camera_preview(self)
+        elif hasattr(app, "_start_camera_preview"):
+            app._start_camera_preview(self)
 
     def on_snap_done(self, path):
         app = self.window()
@@ -1722,6 +1889,11 @@ class ResizableCard(QFrame):
 
         if getattr(self, "_is_physical_camera", False):
             add_item("Focus...", self._open_focus_dialog)
+        is_running = bool(getattr(self, "t", None) and self.t.isRunning())
+        if is_running:
+            add_item("Stop preview", lambda: self.window() and hasattr(self.window(), "_stop_camera_preview") and self.window()._stop_camera_preview(self))
+        else:
+            add_item("Start preview", lambda: self.window() and hasattr(self.window(), "_start_camera_preview") and self.window()._start_camera_preview(self))
         if "://" in str(getattr(self, "sub_val", "")):
             add_item("Akış önizleme (çözünürlük / FPS)…", self._open_stream_tuning_dialog)
         add_item("More in Settings...", self._open_settings_tab)
@@ -1740,6 +1912,11 @@ class ResizableCard(QFrame):
             app.switch(5)
         elif app and hasattr(app, "tabs") and hasattr(app.tabs, "setCurrentIndex"):
             app.tabs.setCurrentIndex(5)
+        if app and hasattr(app, "_settings_tabs"):
+            try:
+                app._settings_tabs.setCurrentIndex(0)
+            except Exception:
+                pass
         if app and hasattr(app, "show_toast"):
             app.show_toast("Opened Settings")
 
@@ -1857,6 +2034,10 @@ class ResizableCard(QFrame):
         app_win = self.window()
         d = get_camera_defaults()
         dark = getattr(app_win, "is_dark", True)
+        sensor_model = str(d.get("sensor_model") or "GENERIC_CSI").strip().upper()
+        focuser_type = str(d.get("focuser_type") or csi_sensor_default_focuser(sensor_model)).strip().lower()
+        scripts = focus_scripts_for_focuser(focuser_type)
+        focus_enabled = focuser_available(focuser_type)
 
         dlg = QDialog(app_win)
         dlg.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -1894,7 +2075,10 @@ class ResizableCard(QFrame):
         t = QLabel("Focus (CSI / I2C)")
         t.setObjectName("FocusDlgTitle")
         layout.addWidget(t)
-        sub = QLabel("Motorized lens: set I2C bus and lens position.")
+        sub = QLabel(
+            f"{csi_sensor_label(sensor_model)}. {focuser_label(focuser_type)}. "
+            + ("Set I2C bus and lens position." if focus_enabled else "This configuration is currently fixed lens.")
+        )
         sub.setObjectName("FocusDlgSubtitle")
         sub.setWordWrap(True)
         layout.addWidget(sub)
@@ -1909,6 +2093,7 @@ class ResizableCard(QFrame):
         bus_spin.setValue(int(d.get("i2c_bus", 10)))
         bus_spin.setFixedWidth(100)
         bus_spin.setMinimumHeight(42)
+        bus_spin.setEnabled(focus_enabled)
         bus_row.addWidget(bus_spin)
         layout.addLayout(bus_row)
 
@@ -1933,6 +2118,7 @@ class ResizableCard(QFrame):
         slider.setRange(0, 1023)
         slider.setValue(int(d.get("focus_position", 512)))
         slider.valueChanged.connect(lambda v: pos_val.setText(str(int(v))))
+        slider.setEnabled(focus_enabled)
         bl.addWidget(slider)
         layout.addWidget(body)
 
@@ -1948,12 +2134,16 @@ class ResizableCard(QFrame):
         btn_row.addStretch()
 
         def apply_focus():
+            if not focus_enabled:
+                dlg.close()
+                return
             pos = slider.value()
             bus = bus_spin.value()
             set_camera_defaults(focus_position=pos, i2c_bus=bus)
             base = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-            script_path = os.path.join(base, "scripts", "focus_imx519.py")
-            if os.path.exists(script_path):
+            focus_name = scripts.get("focus") or ""
+            script_path = os.path.join(base, "scripts", focus_name) if focus_name else ""
+            if focus_name and os.path.exists(script_path):
                 ok, msg = _run_script_checked(
                     [sys.executable, script_path, "--bus", str(bus), "--position", str(pos)],
                     cwd=base,
@@ -1970,13 +2160,14 @@ class ResizableCard(QFrame):
                         + (msg or "Unknown error"),
                     )
             else:
-                QMessageBox.information(self, "Focus", "scripts/focus_imx519.py not found.")
+                QMessageBox.information(self, "Focus", "Focus script for the selected focuser was not found.")
             dlg.close()
 
         apply_btn = QPushButton("Apply")
         apply_btn.setObjectName("FocusPrimaryBtn")
         apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         apply_btn.clicked.connect(apply_focus)
+        apply_btn.setEnabled(focus_enabled)
         btn_row.addWidget(apply_btn)
         layout.addLayout(btn_row)
 
@@ -2055,6 +2246,67 @@ class ResizableCard(QFrame):
             pass
 
 # =============================================================================
+#  UI HELPERS & COMPONENTS
+# =============================================================================
+
+class CollapsibleSection(QFrame):
+    """A professional collapsible panel for decluttering industrial UIs."""
+    def __init__(self, title, parent=None, is_collapsed=False):
+        super().__init__(parent)
+        self.setObjectName("CollapsibleSection")
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(0)
+
+        # Header
+        self.header = QFrame()
+        self.header.setObjectName("CollapsibleHeader")
+        self.header.setFixedHeight(40)
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        hl = QHBoxLayout(self.header)
+        hl.setContentsMargins(15, 0, 15, 0)
+
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("CollapsibleTitle")
+        
+        self.toggle_btn = QLabel("▼") # Arrow indicator
+        self.toggle_btn.setObjectName("CollapsibleArrow")
+        
+        hl.addWidget(self.title_label)
+        hl.addStretch()
+        hl.addWidget(self.toggle_btn)
+
+        # Content area
+        self.content = QFrame()
+        self.content.setObjectName("CollapsibleContent")
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(0)
+
+        self.layout.addWidget(self.header)
+        self.layout.addWidget(self.content)
+
+        self.header.mousePressEvent = self.toggle
+        
+        if is_collapsed:
+            self.content.setVisible(False)
+            self.toggle_btn.setText("▶")
+
+    def toggle(self, event=None):
+        if self.content.isVisible():
+            self.content.setVisible(False)
+            self.toggle_btn.setText("▶")
+        else:
+            self.content.setVisible(True)
+            self.toggle_btn.setText("▼")
+
+    def addWidget(self, widget):
+        self.content_layout.addWidget(widget)
+
+    def addLayout(self, layout):
+        self.content_layout.addLayout(layout)
+
+# =============================================================================
 #  UI LAYOUT & THEME
 # =============================================================================
 
@@ -2066,33 +2318,33 @@ class ThemeOps:
         if is_dark:
             # ── Obsidian Dark ─────────────────────────────────────────────────
             return {
-                "bg":                   "#07090F",   # Space black base
-                "canvas":               "#0B0F1A",   # Slightly elevated surface
-                "sb":                   "#090D18",   # Sidebar — near black
-                "card":                 "#0F1629",   # Card — deep navy
+                "bg":                   "#0B0F17",   # Softer deep navy base
+                "canvas":               "#101622",   # Main canvas
+                "sb":                   "#0D1420",   # Sidebar shell
+                "card":                 "#141D2B",   # Card shell
                 "txt":                  "#E8EEFF",   # Cool white text
-                "sub":                  "#7B8DB0",   # Muted blue-gray
-                "brd":                  "rgba(255,255,255,0.07)",   # Ultra-thin border
-                "ibg":                  "#141C30",   # Input background
-                "hov":                  "rgba(59,130,246,0.12)",    # Hover tint
-                "ihov":                 "#1A2440",   # Input hover
+                "sub":                  "#93A1BC",   # Muted copy
+                "brd":                  "rgba(255,255,255,0.10)",
+                "ibg":                  "#182233",
+                "hov":                  "rgba(96,165,250,0.11)",
+                "ihov":                 "#1C2A3E",
                 "ov_bg":                "rgba(5,8,15,0.92)",
                 "card_txt":             "#EEF2FF",
-                "preview_bg":           "#0A0E1A",
-                "preview_br":           "rgba(100,140,220,0.28)",
-                "surface_row":          "#111828",
-                "surface_row_compact":  "#0F1525",
-                "hairline":             "#1E2D4A",
-                "card_header_bg":       "#131C30",
-                "meta_panel_bg":        "#0D1525",
+                "preview_bg":           "#0D1420",
+                "preview_br":           "rgba(132,170,235,0.30)",
+                "surface_row":          "#162133",
+                "surface_row_compact":  "#121B2A",
+                "hairline":             "#283851",
+                "card_header_bg":       "#172235",
+                "meta_panel_bg":        "#111B2B",
                 "accent_soft_bg":       "rgba(59,130,246,0.12)",
                 "accent_soft_br":       "rgba(99,160,255,0.32)",
-                "ctx_menu_bg":          "#111828",
+                "ctx_menu_bg":          "#152033",
                 "ctx_menu_hi":          "rgba(59,130,246,0.16)",
-                "pop_edge":             "#1E2D4A",
-                "zt_inset":             "#0A1020",
-                "focus_shell_top":      "#141E35",
-                "focus_shell_bot":      "#0C1525",
+                "pop_edge":             "#30455F",
+                "zt_inset":             "#111B2B",
+                "focus_shell_top":      "#1A2740",
+                "focus_shell_bot":      "#121C2E",
                 "focus_border_hi":      "#6BA3FF",
                 "focus_panel":          "rgba(255,255,255,0.05)",
                 "focus_panel_br":       "rgba(107,163,255,0.28)",
@@ -2101,33 +2353,33 @@ class ThemeOps:
             }
         # ── Pearl Light ───────────────────────────────────────────────────────
         return {
-            "bg":                   "#F5F7FF",   # Very light indigo-white
-            "canvas":               "#FAFBFF",   # Near white canvas
-            "sb":                   "#EEF2FF",   # Indigo-tinted sidebar
+            "bg":                   "#F3F6FB",   # Soft cool gray
+            "canvas":               "#F8FAFD",   # Main canvas
+            "sb":                   "#EAF0F8",   # Sidebar shell
             "card":                 "#FFFFFF",   # Pure white card
             "txt":                  "#0F172A",   # Deep navy text
-            "sub":                  "#64748B",   # Slate gray secondary
-            "brd":                  "rgba(15,23,42,0.08)",    # Ultra-thin border
-            "ibg":                  "#F8FAFF",   # Input background
-            "hov":                  "rgba(37,99,235,0.08)",   # Hover tint
-            "ihov":                 "#EEF4FF",   # Input hover
+            "sub":                  "#596980",   # Secondary copy
+            "brd":                  "rgba(15,23,42,0.10)",
+            "ibg":                  "#F4F7FC",
+            "hov":                  "rgba(37,99,235,0.07)",
+            "ihov":                 "#EDF3FB",
             "ov_bg":                "rgba(240,245,255,0.90)",
             "card_txt":             "#1E293B",
-            "preview_bg":           "#F0F4FF",
-            "preview_br":           "rgba(37,99,235,0.18)",
-            "surface_row":          "#F8FAFF",
-            "surface_row_compact":  "#F3F6FF",
-            "hairline":             "#E2E8F0",
-            "card_header_bg":       "#F8FAFF",
-            "meta_panel_bg":        "#F5F8FF",
+            "preview_bg":           "#EEF3FA",
+            "preview_br":           "rgba(37,99,235,0.20)",
+            "surface_row":          "#F2F6FC",
+            "surface_row_compact":  "#EDF2F9",
+            "hairline":             "#D5DFEC",
+            "card_header_bg":       "#F4F8FD",
+            "meta_panel_bg":        "#F1F6FC",
             "accent_soft_bg":       "rgba(37,99,235,0.08)",
             "accent_soft_br":       "rgba(37,99,235,0.22)",
             "ctx_menu_bg":          "#FFFFFF",
             "ctx_menu_hi":          "rgba(37,99,235,0.10)",
-            "pop_edge":             "#CBD5E1",   # Slate-300
-            "zt_inset":             "#F5F8FF",
+            "pop_edge":             "#C2CFDF",
+            "zt_inset":             "#EFF4FB",
             "focus_shell_top":      "#FFFFFF",
-            "focus_shell_bot":      "#F0F5FF",
+            "focus_shell_bot":      "#EFF4FB",
             "focus_border_hi":      "#3B82F6",
             "focus_panel":          "rgba(255,255,255,0.98)",
             "focus_panel_br":       "rgba(37,99,235,0.18)",
@@ -2173,21 +2425,22 @@ class ThemeOps:
         focus_panel_br = p["focus_panel_br"]
         accent_net = p["accent_net"]
         # ── Premium accent tokens ─────────────────────────────────────────────
-        accent        = "#3B82F6" if is_dark else "#2563EB"   # Indigo-blue primary
-        accent_hover  = "#60A5FA" if is_dark else "#3B82F6"   # Lighter on hover
-        accent_pressed= "#1E40AF" if is_dark else "#1D4ED8"   # Deeper on press
-        accent_deep   = "#1D4ED8" if is_dark else "#1E40AF"   # Gradient stop-1
-        nav_idle      = "#8A9BBF" if is_dark else "#4A5568"
-        search_ring   = "rgba(99,160,255,0.32)" if is_dark else "rgba(37,99,235,0.20)"
-        card_hover_brd= "rgba(59,130,246,0.50)" if is_dark else "rgba(37,99,235,0.38)"
+        accent        = "#4A86E8" if is_dark else "#2F6FD3"
+        accent_vivid  = "#5F7DEB" if is_dark else "#4A69DF"
+        accent_hover  = "#76A5F0" if is_dark else "#5A8CE8"
+        accent_pressed= "#2D56B4" if is_dark else "#2758B8"
+        accent_deep   = "#365FC8" if is_dark else "#2C5FC5"
+        nav_idle      = "#A4B2CB" if is_dark else "#526176"
+        search_ring   = "rgba(95,125,235,0.24)" if is_dark else "rgba(74,105,223,0.20)"
+        card_hover_brd= "rgba(95,125,235,0.36)" if is_dark else "rgba(74,105,223,0.28)"
         if is_dark:
-            sb_m_txt, sb_m_br, sb_m_bg = "#D4C4FD", "rgba(167,139,250,0.42)", "rgba(139,92,246,0.12)"
+            sb_m_txt, sb_m_br, sb_m_bg = "#CBD6FF", "rgba(120,146,236,0.38)", "rgba(95,125,235,0.11)"
             sb_e_txt, sb_e_br, sb_e_bg = "#93C5FD", "rgba(99,160,255,0.40)",  "rgba(59,130,246,0.12)"
             sb_p_txt, sb_p_br, sb_p_bg = "#86EFAC", "rgba(52,211,153,0.42)",  "rgba(16,185,129,0.12)"
             docker_tag_txt = "#60A5FA"
             ai_hot         = "#3B82F6"
         else:
-            sb_m_txt, sb_m_br, sb_m_bg = "#5B21B6", "rgba(91,33,182,0.30)",  "rgba(91,33,182,0.07)"
+            sb_m_txt, sb_m_br, sb_m_bg = "#3448A8", "rgba(52,72,168,0.28)",  "rgba(52,72,168,0.07)"
             sb_e_txt, sb_e_br, sb_e_bg = "#1D4ED8", "rgba(37,99,235,0.28)",  "rgba(37,99,235,0.08)"
             sb_p_txt, sb_p_br, sb_p_bg = "#047857", "rgba(4,120,87,0.28)",   "rgba(5,150,105,0.10)"
             docker_tag_txt = "#1D4ED8"
@@ -2198,20 +2451,103 @@ class ThemeOps:
         QWidget {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'SF Pro Display', Roboto, 'Helvetica Neue', sans-serif; color: {txt}; font-size: 13px; letter-spacing: 0.12px; }}
         QWidget#MainCanvas {{ background-color: {canvas}; }}
         QFrame#Sidebar {{ background-color: {sb}; border-right: 1px solid {brd}; }}
-        QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 1px solid {pop_edge}; border-radius: 20px; }}
+        QFrame#Sidebar[compact="true"] {{ border-right: 1px solid {pop_edge}; }}
+        QLabel#SidebarScopeBadge {{
+            color: {accent};
+            border: 1px solid {accent_soft_br};
+            background-color: {accent_soft_bg};
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            padding: 5px 8px;
+        }}
+        QLabel#CollapsibleTitle {{
+            font-size: 13px;
+            font-weight: 700;
+            color: {sub};
+            border: none;
+            background: transparent;
+        }}
+        QLabel#CollapsibleArrow {{
+            font-size: 12px;
+            color: {sub};
+            border: none;
+            background: transparent;
+        }}
+        QLabel#RoleLockHint {{
+            color: {sub};
+            font-size: 11px;
+            font-weight: 700;
+            border: 1px solid {pop_edge};
+            border-radius: 10px;
+            background-color: {meta_panel_bg};
+            padding: 6px 10px;
+        }}
+        QFrame#Card, QFrame#InfoCard {{ background-color: {card}; border: 1px solid {pop_edge}; border-radius: 18px; }}
         QFrame#Card:hover, QFrame#InfoCard:hover {{ border-color: {card_hover_brd}; }}
+        QTabWidget#SettingsTabs::pane {{ border: none; background: transparent; margin-top: 10px; }}
+        QTabWidget#SettingsTabs QTabBar::tab {{
+            background-color: {hov};
+            color: {sub};
+            border: 1px solid {brd};
+            border-radius: 12px;
+            padding: 10px 18px;
+            margin-right: 8px;
+            font-size: 12px;
+            font-weight: 700;
+            min-height: 18px;
+        }}
+        QTabWidget#SettingsTabs QTabBar::tab:selected {{
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {accent}, stop:0.64 {accent_vivid}, stop:1 {accent_deep});
+            color: #FFFFFF;
+            border-color: rgba(255,255,255,0.18);
+        }}
+        QTabWidget#SettingsTabs QTabBar::tab:hover:!selected {{ border-color: {accent}; color: {accent}; }}
+        QPushButton#SettingsHubBtn {{
+            background-color: {hov};
+            color: {txt};
+            border: 1px solid {brd};
+            border-radius: 14px;
+            padding: 12px 14px;
+            text-align: left;
+            font-size: 11px;
+            font-weight: 620;
+            min-height: 82px;
+        }}
+        QPushButton#SettingsHubBtn:hover {{
+            border-color: {accent_soft_br};
+            background-color: {surface_row};
+        }}
+        QPushButton#SettingsHubBtn:pressed {{
+            background-color: {meta_panel_bg};
+            border-color: {accent};
+        }}
+        QFrame#SettingsSummaryCard {{
+            background-color: {surface_row};
+            border: 1px solid {pop_edge};
+            border-radius: 16px;
+        }}
         QFrame#ModalBox {{ background-color: {card}; border: 1px solid {pop_edge}; border-radius: 18px; }}
         QFrame#CardHeader {{ background-color: {card_header_bg}; border-top-left-radius: 16px; border-top-right-radius: 16px; border-bottom: 1px solid {pop_edge}; }}
         QFrame#MetaPanel {{ background-color: {meta_panel_bg}; border: 1px solid {pop_edge}; border-radius: 12px; }}
-        QFrame#MediaCard {{ background-color: {surface_row}; border: 1px solid {pop_edge}; border-radius: 20px; }}
+        QFrame#MediaCard {{ background-color: {surface_row}; border: 1px solid {pop_edge}; border-radius: 18px; }}
         QFrame#MediaCard:hover {{ border-color: {card_hover_brd}; }}
         QLabel#MediaThumb {{ background-color: {preview_bg}; border: 1px solid {pop_edge}; border-radius: 14px; color: {sub}; }}
         QLabel#MediaThumbPlaceholder {{
             background-color: {meta_panel_bg}; border: 2px dashed {pop_edge}; border-radius: 14px; color: {sub};
             font-size: 11px; font-weight: 800; letter-spacing: 0.12em;
         }}
-        QLabel#MediaCardTitle {{ color: {txt}; font-size: 13px; font-weight: 800; border: none; background: transparent; }}
-        QLabel#MediaCardMeta {{ color: {sub}; font-size: 11px; font-weight: 600; border: none; background: transparent; }}
+        QLabel#MediaCardTitle {{ color: {txt}; font-size: 13px; font-weight: 760; border: none; background: transparent; }}
+        QLabel#MediaCardMeta {{ color: {sub}; font-size: 12px; font-weight: 600; border: none; background: transparent; }}
+        QFrame#ResultPreviewFrame {{ background-color: {preview_inset}; border-radius: 11px; border: 1px solid {pop_edge}; }}
+        QLabel#ResultPlaceholder {{ font-size: 20px; font-weight: 780; border: none; background: transparent; }}
+        QLabel#ResultCameraName {{ color: {txt}; font-size: 13px; font-weight: 780; border: none; background: transparent; }}
+        QLabel#ResultDecisionMeta {{ font-size: 11px; font-weight: 760; border: none; background: transparent; }}
+        QLabel#ResultMetaCompact {{ color: {sub}; font-size: 10px; font-weight: 600; border: none; background: transparent; }}
+        QFrame#HomeBadgeFrame {{ background-color: {meta_panel_bg}; border: 1px solid {pop_edge}; border-radius: 10px; }}
+        QLabel#HomeBadgeText {{ color: {accent}; font-size: 14px; font-weight: 900; border: none; background: transparent; }}
+        QLabel#HomeCardTitle {{ color: {txt}; font-size: 17px; font-weight: 800; border: none; background: transparent; }}
         QFrame#SettingsInset {{ background-color: {zt_inset}; border: 1px solid {pop_edge}; border-radius: 14px; }}
         QFrame#MonPreview {{ background-color: #000000; border-radius: 16px; border: 1px solid {pop_edge}; }}
         QFrame#VideoWell {{
@@ -2226,13 +2562,28 @@ class ThemeOps:
         }}
         QLabel#FpsLabel {{
             color: {sub};
-            font-size: 9px;
+            font-size: 10px;
             font-weight: 800;
             letter-spacing: 0.3px;
             border: none;
             background: transparent;
             min-width: 48px;
         }}
+        QLabel#RuntimeNameLabel {{ color: {txt}; font-size: 16px; font-weight: 750; border: none; background: transparent; }}
+        QLabel#RuntimeMetricValue {{ color: {txt}; font-size: 14px; font-weight: 700; border: none; background: transparent; }}
+        QLabel#StatusPill {{
+            font-size: 12px;
+            font-weight: 700;
+            border-radius: 10px;
+            padding: 5px 10px;
+            border: 1px solid {pop_edge};
+            background-color: {surface_row};
+            color: {sub};
+        }}
+        QLabel#StatusPill[stateTone="success"] {{ color: #30D158; border-color: rgba(48,209,88,0.35); background-color: rgba(48,209,88,0.12); }}
+        QLabel#StatusPill[stateTone="danger"] {{ color: #FF453A; border-color: rgba(255,69,58,0.35); background-color: rgba(255,69,58,0.12); }}
+        QLabel#StatusPill[stateTone="neutral"] {{ color: {sub}; border-color: {pop_edge}; background-color: {surface_row}; }}
+        QLabel#StateValueLabel {{ color: {accent}; font-size: 13px; font-weight: 700; border: none; background: transparent; }}
         QPushButton#ModalToggleCheck {{
             background-color: {meta_panel_bg}; border: 1px solid {brd}; border-radius: 12px; padding: 12px; font-size: 11px; text-align: left; color: {txt};
         }}
@@ -2288,7 +2639,7 @@ class ThemeOps:
         QPushButton#FocusSecondaryBtn:hover {{ border-color: {focus_border_hi}; color: {txt}; background-color: {hov}; }}
         QPushButton#FocusPrimaryBtn {{
             background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {accent}, stop:1 {accent_deep});
-            color: #FFFFFF;
+            color: #FFFFFF !important;
             border-radius: 12px;
             padding: 10px 28px;
             font-size: 14px;
@@ -2297,8 +2648,8 @@ class ThemeOps:
             min-height: 44px;
             min-width: 128px;
         }}
-        QPushButton#FocusPrimaryBtn:hover {{ background: {accent_hover}; color: #FFFFFF; }}
-        QPushButton#FocusPrimaryBtn:pressed {{ background: {accent_pressed}; color: #FFFFFF; }}
+        QPushButton#FocusPrimaryBtn:hover {{ background: {accent_hover}; color: #FFFFFF !important; }}
+        QPushButton#FocusPrimaryBtn:pressed {{ background: {accent_pressed}; color: #FFFFFF !important; }}
         QPushButton#BtnModalCancel {{
             background-color: transparent;
             color: {sub};
@@ -2367,11 +2718,11 @@ class ThemeOps:
         QLabel#AiMetaLineActive {{ color: {ai_hot}; font-size: 11px; font-weight: 900; letter-spacing: 0.2px; border: none; background: transparent; }}
         QLabel#FormLabel {{ color: {sub}; font-size: 13px; font-weight: 700; border: none; background: transparent; }}
         QLabel#FormLabelSm {{ color: {sub}; font-size: 12px; font-weight: 700; border: none; background: transparent; }}
-        QLabel#CaptionMuted {{ color: {sub}; font-size: 11px; border: none; background: transparent; }}
+        QLabel#CaptionMuted {{ color: {sub}; font-size: 12px; border: none; background: transparent; }}
         QLabel#CaptionTiny {{ color: {sub}; font-size: 9px; border: none; background: transparent; }}
         QLabel#FolderSlug {{ color: {sub}; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; border: none; background: transparent; }}
         QLabel#MonoIp {{ font-family: 'SF Mono', ui-monospace, monospace; font-size: 12px; font-weight: 700; color: {accent_net}; border: none; background: transparent; min-width: 110px; }}
-        QLabel#CaptionMutedSm {{ color: {sub}; font-size: 10px; font-weight: 700; border: none; background: transparent; }}
+        QLabel#CaptionMutedSm {{ color: {sub}; font-size: 11px; font-weight: 650; border: none; background: transparent; }}
         QLabel#MonoMuted {{ color: {sub}; font-size: 10px; font-family: monospace; border: none; background: transparent; }}
         QLabel#PreviewHint {{ color: {sub}; font-size: 11px; font-weight: 700; letter-spacing: 0.15px; border: none; background: transparent; }}
         QLabel#PreviewArea {{
@@ -2383,9 +2734,20 @@ class ThemeOps:
             font-weight: 800;
             letter-spacing: 0.35px;
         }}
-        QLineEdit, QComboBox, QSpinBox {{ background-color: {ibg}; border: 1px solid {pop_edge}; border-radius: 12px; padding: 10px 16px; color: {txt}; font-size: 14px; font-weight: 500; min-height: 40px; }}
-        QSpinBox::up-button, QSpinBox::down-button {{ width: 24px; border: none; background: transparent; }}
-        QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color: {accent}; border-width: 1.5px; background-color: rgba(59,130,246,0.07); }}
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background-color: {ibg}; border: 1px solid {pop_edge}; border-radius: 12px; padding: 10px 16px; color: {txt}; font-size: 14px; font-weight: 500; min-height: 40px; }}
+        QLineEdit[roleLocked="true"], QComboBox[roleLocked="true"], QSpinBox[roleLocked="true"], QDoubleSpinBox[roleLocked="true"] {{
+            border: 1px dashed {accent_soft_br};
+            background-color: {meta_panel_bg};
+            color: {sub};
+        }}
+        QCheckBox[roleLocked="true"] {{
+            color: {sub};
+        }}
+        QWidget[roleLocked="true"] {{
+            opacity: 0.95;
+        }}
+        QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 24px; border: none; background: transparent; }}
+        QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {accent}; border-width: 1.5px; background-color: rgba(59,130,246,0.07); }}
         QFrame#SearchShell {{
             background-color: {ibg};
             border: 1px solid {search_ring};
@@ -2446,9 +2808,40 @@ class ThemeOps:
         QSlider::groove:horizontal {{ height: 6px; background: {brd}; border-radius: 4px; }}
         QSlider::handle:horizontal {{ width: 20px; height: 20px; margin: -7px 0; background: {accent}; border-radius: 10px; border: 2px solid {card}; }}
         QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 4px; height: 6px; }}
-        QPushButton#NavTab {{ border: none; border-radius: 12px; text-align: left; padding: 14px 20px; color: {nav_idle}; font-weight: 600; font-size: 14px; letter-spacing: 0.12px; min-height: 48px; }}
-        QPushButton#NavTab:checked {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {accent}, stop:1 {accent_deep}); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.18); border-left: 3px solid rgba(255,255,255,0.65); font-weight: 800; }}
+        QPushButton#NavTab {{ border: 1px solid transparent; border-radius: 12px; text-align: left; padding: 13px 18px; color: {nav_idle}; font-weight: 680; font-size: 13px; letter-spacing: 0.10px; min-height: 46px; }}
+        QPushButton#NavTab[compact="true"] {{
+            text-align: center;
+            padding: 12px 8px;
+            font-size: 12px;
+            font-weight: 760;
+            letter-spacing: 0.4px;
+            min-height: 44px;
+            min-width: 58px;
+        }}
+        QPushButton#NavTab:checked {{
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {accent}, stop:0.60 {accent_vivid}, stop:1 {accent_deep});
+            color: #FFFFFF !important;
+            border: 1px solid rgba(255,255,255,0.20);
+            border-left: 2px solid rgba(255,255,255,0.55);
+            font-weight: 800;
+        }}
+        QPushButton#NavTab[compact="true"]:checked {{
+            border-left: 1px solid rgba(255,255,255,0.24);
+            border-bottom: 2px solid rgba(255,255,255,0.60);
+        }}
         QPushButton#NavTab:hover:!checked {{ background-color: {hov}; color: {txt}; border: 1px solid {pop_edge}; }}
+        QPushButton#SidebarToggle {{
+            border: 1px solid {pop_edge};
+            border-radius: 10px;
+            background-color: {hov};
+            color: {sub};
+            font-size: 14px;
+            font-weight: 820;
+            min-height: 34px;
+            padding: 0 10px;
+        }}
+        QPushButton#SidebarToggle:hover {{ border-color: {accent_soft_br}; color: {txt}; background-color: {ihov}; }}
+        QPushButton#SidebarToggle:pressed {{ background-color: {meta_panel_bg}; }}
         QPushButton#IconRefresh {{
             min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
             border-radius: 10px; border: 1px solid {brd}; background-color: {hov}; color: {txt};
@@ -2467,15 +2860,18 @@ class ThemeOps:
         QLabel#DockSize {{ color: {accent}; font-size: 11px; font-weight: 700; border: none; background: transparent; margin-right: 15px; }}
         QPushButton#AddBtn {{ border: 1px dashed {pop_edge}; border-radius: 20px; color: {sub}; background-color: transparent; font-weight: 800; font-size: 11px; padding: 14px; }}
         QPushButton#AddBtn:hover {{ border-color: {accent}; color: {accent}; background-color: rgba(59,130,246,0.08); }}
-        QPushButton#BtnPrimary {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {accent}, stop:1 {accent_deep}); color: #FFFFFF; border-radius: 10px; padding: 8px 18px; font-weight: 700; border: none; font-size: 13px; letter-spacing: 0.3px; min-height: 36px; }}
-        QPushButton#BtnPrimary:hover {{ background: {accent_hover}; color: #FFFFFF; }}
-        QPushButton#BtnPrimary:pressed {{ background: {accent_pressed}; color: #FFFFFF; }}
-        QPushButton#BtnSecondary {{ background-color: {hov}; color: {txt}; border-radius: 10px; padding: 8px 16px; font-weight: 700; border: 1px solid {brd}; font-size: 13px; min-height: 36px; }}
-        QPushButton#BtnSecondary:hover {{ background-color: {ihov}; border-color: {accent}; color: {accent}; }}
+        QPushButton#BtnPrimary {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {accent}, stop:0.65 {accent_vivid}, stop:1 {accent_deep}); color: #FFFFFF !important; border-radius: 10px; padding: 8px 18px; font-weight: 720; border: 1px solid rgba(255,255,255,0.14); font-size: 13px; letter-spacing: 0.2px; min-height: 36px; }}
+        QPushButton#BtnPrimary:hover {{ background: {accent_hover}; color: #FFFFFF !important; }}
+        QPushButton#BtnPrimary:pressed {{ background: {accent_pressed}; color: #FFFFFF !important; }}
+        QPushButton#BtnSecondary {{ background-color: {hov}; color: {txt}; border-radius: 10px; padding: 8px 16px; font-weight: 650; border: 1px solid {pop_edge}; font-size: 13px; min-height: 36px; }}
+        QPushButton#BtnSecondary:hover {{ background-color: {ihov}; border-color: {accent_soft_br}; color: {txt}; }}
         QPushButton#BtnSecondary:pressed {{ background-color: {accent_soft_bg}; }}
         QPushButton#BtnOutline {{ background: transparent; color: {accent}; border-radius: 10px; padding: 8px 16px; font-weight: 700; border: 1.5px solid {accent}; font-size: 13px; min-height: 36px; }}
         QPushButton#BtnOutline:hover {{ background-color: {accent_soft_bg}; }}
-        QPushButton#BtnSm {{ background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {accent}, stop:1 {accent_deep}); color: #FFFFFF; border-radius: 8px; padding: 5px 14px; font-weight: 700; border: none; font-size: 12px; min-height: 30px; }}
+        QPushButton#BtnSm {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {accent}, stop:0.65 {accent_vivid}, stop:1 {accent_deep}); color: #FFFFFF !important; border-radius: 8px; padding: 5px 14px; font-weight: 700; border: none; font-size: 12px; min-height: 30px; }}
+        QLabel#DeviceCardAccent {{ color: {accent}; font-size: 12px; font-weight: 760; border: none; background: transparent; }}
+        QLabel#DeviceCamName {{ color: {txt}; font-size: 12px; font-weight: 650; border: none; background: transparent; }}
+        QLabel#DeviceCardStatus {{ font-size: 11px; font-weight: 800; border: none; background: transparent; }}
         QPushButton#BtnSm:hover {{ background: {accent_hover}; }}
         QPushButton#BtnDanger {{ background-color: rgba(239, 68, 68, 0.12); color: #EF4444; border-radius: 10px; padding: 8px 14px; border: 1px solid rgba(239, 68, 68, 0.28); font-weight: 700; font-size: 13px; min-height: 36px; }}
         QPushButton#BtnDanger:hover {{ background-color: #EF4444; color: white; }}
@@ -2484,13 +2880,13 @@ class ThemeOps:
         QPushButton#ShellBtn:hover {{ border-color: {accent}; color: {accent}; background: {accent_soft_bg}; }}
         QPushButton#ShellBtn:pressed {{ background: {ihov}; }}
         QPushButton#OpenAction {{ background-color: {accent_soft_bg}; color: {accent}; border-radius: 10px; font-size: 12px; font-weight: 700; border: 1px solid {accent_soft_br}; padding: 5px 14px; min-height: 30px; }}
-        QPushButton#OpenAction:hover {{ background-color: {accent}; color: #FFFFFF; border-color: {accent}; }}
+        QPushButton#OpenAction:hover {{ background-color: {accent}; color: #FFFFFF !important; border-color: {accent}; }}
         QPushButton#RowGhost {{ border: 1px solid {brd}; border-radius: 8px; background: {hov}; color: {txt}; font-size: 11px; font-weight: 600; padding: 5px 12px; min-height: 30px; }}
         QPushButton#RowGhost:hover {{ border-color: {accent}; color: {accent}; background-color: {accent_soft_bg}; }}
         QPushButton#RowGhost:pressed {{ background-color: {ihov}; }}
         QPushButton#RowAccent {{ border: 1.5px solid {accent_soft_br}; border-radius: 8px; background: {accent_soft_bg}; color: {accent}; font-size: 11px; font-weight: 700; padding: 5px 12px; min-height: 30px; }}
-        QPushButton#RowAccent:hover {{ background-color: {accent}; color: #FFFFFF; border-color: {accent}; }}
-        QPushButton#RowAccent:pressed {{ background-color: {accent_deep}; color: #FFFFFF; }}
+        QPushButton#RowAccent:hover {{ background-color: {accent}; color: #FFFFFF !important; border-color: {accent}; }}
+        QPushButton#RowAccent:pressed {{ background-color: {accent_deep}; color: #FFFFFF !important; }}
         QPushButton#IconCloseSm {{ border: none; background: transparent; color: {sub}; font-size: 17px; min-width: 28px; min-height: 28px; }}
         QPushButton#IconCloseSm:hover {{ color: #EF4444; }}
         QPushButton#CardHeaderAction {{
@@ -2643,6 +3039,49 @@ def ssh_exec_text(client, cmd, timeout=25):
     return out_b.decode(errors="replace"), err_b.decode(errors="replace"), code
 
 
+def _sftp_ensure_remote_dir(sftp, remote_dir: str):
+    path = str(remote_dir or "").strip()
+    if not path:
+        return
+    parts = []
+    cur = path
+    while cur not in ("", "/", "."):
+        parts.append(cur)
+        cur = posixpath.dirname(cur)
+        if cur == path:
+            break
+    for target in reversed(parts):
+        try:
+            sftp.stat(target)
+        except OSError:
+            try:
+                sftp.mkdir(target)
+            except OSError:
+                pass
+
+
+def sftp_upload_tree(client, local_dir: str, remote_dir: str):
+    root = os.path.abspath(local_dir)
+    if not os.path.isdir(root):
+        raise FileNotFoundError(root)
+    sftp = client.open_sftp()
+    try:
+        _sftp_ensure_remote_dir(sftp, remote_dir)
+        for base, dirs, files in os.walk(root):
+            rel = os.path.relpath(base, root)
+            rel = "" if rel == "." else rel
+            remote_base = remote_dir if not rel else posixpath.join(remote_dir, rel.replace(os.sep, "/"))
+            _sftp_ensure_remote_dir(sftp, remote_base)
+            for d in dirs:
+                _sftp_ensure_remote_dir(sftp, posixpath.join(remote_base, d))
+            for name in files:
+                local_path = os.path.join(base, name)
+                remote_path = posixpath.join(remote_base, name)
+                sftp.put(local_path, remote_path)
+    finally:
+        sftp.close()
+
+
 def form_label(text):
     w = QLabel(text)
     w.setObjectName("FormLabel")
@@ -2659,6 +3098,61 @@ def settings_title(text):
     w = QLabel(text)
     w.setObjectName("SettingsBlockTitle")
     return w
+
+
+def _models_page_helpers():
+    return {
+        "FlowLayout": FlowLayout,
+        "ToggleSwitch": ToggleSwitch,
+        "form_label": form_label,
+        "polish_scroll_area": polish_scroll_area,
+    }
+
+
+def _settings_page_helpers():
+    return {
+        "CAMERA_RESOLUTION_PRESETS": CAMERA_RESOLUTION_PRESETS,
+        "CollapsibleSection": CollapsibleSection,
+        "DockerManager": DockerManager,
+        "DonutChart": DonutChart,
+        "ToggleSwitch": ToggleSwitch,
+        "csi_sensor_default_focuser": csi_sensor_default_focuser,
+        "csi_sensor_default_resolution_index": csi_sensor_default_resolution_index,
+        "csi_sensor_profiles": csi_sensor_profiles,
+        "csi_sensor_recommended_capture": csi_sensor_recommended_capture,
+        "focuser_profiles": focuser_profiles,
+        "form_label": form_label,
+        "form_label_sm": form_label_sm,
+        "get_camera_defaults": get_camera_defaults,
+        "get_gpu_info": get_gpu_info,
+        "get_zerotier_local_ips": get_zerotier_local_ips,
+        "get_zerotier_networks": get_zerotier_networks,
+        "get_zerotier_peer_count": get_zerotier_peer_count,
+        "get_zerotier_peers": get_zerotier_peers,
+        "get_zerotier_status": get_zerotier_status,
+        "hairline": hairline,
+        "jetson_board_catalog": jetson_board_catalog,
+        "load_app_prefs": load_app_prefs,
+        "make_icon_refresh_button": make_icon_refresh_button,
+        "polish_scroll_area": polish_scroll_area,
+        "set_camera_defaults": set_camera_defaults,
+        "settings_title": settings_title,
+    }
+
+
+def _inspection_page_helpers():
+    return {
+        "FlowLayout": FlowLayout,
+        "polish_scroll_area": polish_scroll_area,
+    }
+
+
+def _results_page_helpers():
+    return {
+        "FlowLayout": FlowLayout,
+        "make_icon_refresh_button": make_icon_refresh_button,
+        "polish_scroll_area": polish_scroll_area,
+    }
 
 
 class VisionAnalytics:
@@ -2778,7 +3272,7 @@ def _profile_to_size(profile):
 
 # -----------------------------------------------------------------------------
 # Jetson CSI / nvarguscamerasrc pipeline defaults
-# Resolution presets: tuned for high-res Sony CSI modules (e.g. IMX519); IMX219/477/230 limits differ — see docs/CSI_CAMERA_FOCUS.md
+# Resolution presets: tuned for high-res Sony CSI modules (e.g. CSI/USB Camera); IMX219/477/230 limits differ — see docs/CSI_CAMERA_FOCUS.md
 # Focus: fixed = apply saved position when stream starts; manual = slider + Apply;
 #   auto = run autofocus script (stop live preview first when possible).
 # -----------------------------------------------------------------------------
@@ -2949,7 +3443,7 @@ def _probe_stream_native_geometry(src: str, timeout_sec: float = 4.0):
             time.sleep(0.04)
         return None, None, fps
     except Exception as e:
-        log.debug("probe_stream_native_geometry: %s", e)
+        log.debug("probe_stream_native_geome%s", e)
         return None, None, 0.0
     finally:
         if cap is not None:
@@ -3041,15 +3535,175 @@ def load_app_prefs():
     return {}
 
 
+def save_app_prefs(data: dict):
+    try:
+        with open(_app_prefs_path(), "w", encoding="utf-8") as f:
+            json.dump(data or {}, f, indent=2)
+    except Exception as e:
+        logging.debug("save_app_prefs: %s", e)
+
+
 def save_app_prefs_remote_host(ip):
     """Persist Settings → Remote host IP. Empty string clears remote (local Docker)."""
     try:
         d = load_app_prefs()
         d["remote_host_ip"] = (ip or "").strip()
-        with open(_app_prefs_path(), "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2)
+        save_app_prefs(d)
     except Exception as e:
         logging.debug("save_app_prefs_remote_host: %s", e)
+
+
+def save_app_prefs_sidebar_compact(compact: bool):
+    """Persist sidebar compact/expanded preference."""
+    try:
+        d = load_app_prefs()
+        d["sidebar_compact"] = bool(compact)
+        save_app_prefs(d)
+    except Exception as e:
+        logging.debug("save_app_prefs_sidebar_compact: %s", e)
+
+
+def save_app_prefs_flag(key: str, value):
+    """Persist a generic boolean app preference flag."""
+    try:
+        d = load_app_prefs()
+        d[str(key)] = bool(value)
+        save_app_prefs(d)
+    except Exception as e:
+        logging.debug("save_app_prefs_flag(%s): %s", key, e)
+
+
+def save_app_prefs_value(key: str, value):
+    """Persist a generic app preference value."""
+    try:
+        d = load_app_prefs()
+        d[str(key)] = value
+        save_app_prefs(d)
+    except Exception as e:
+        logging.debug("save_app_prefs_value(%s): %s", key, e)
+
+
+def _load_json_file(path: str, fallback):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return fallback
+
+
+def _deep_merge_dicts(base, override):
+    if not isinstance(base, dict) or not isinstance(override, dict):
+        return override
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_dicts(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _inspection_defaults_path():
+    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "inspection_profile_defaults.json"))
+
+
+def _jetson_pin_catalog_path():
+    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "jetson_pin_catalog.json"))
+
+
+def default_inspection_profile():
+    return _load_json_file(_inspection_defaults_path(), {})
+
+
+def _inspection_profile_path():
+    return os.path.join(_visiondock_dir(), "inspection_profile.json")
+
+
+def load_inspection_profile():
+    defaults = default_inspection_profile()
+    saved = _load_json_file(_inspection_profile_path(), {})
+    merged = _deep_merge_dicts(defaults, saved)
+    if isinstance(merged, dict):
+        if not merged.get("camera_name") and merged.get("station_name"):
+            merged["camera_name"] = merged.get("station_name")
+        if not merged.get("station_name") and merged.get("camera_name"):
+            merged["station_name"] = merged.get("camera_name")
+    return merged
+
+
+def save_inspection_profile(profile: dict):
+    try:
+        with open(_inspection_profile_path(), "w", encoding="utf-8") as f:
+            json.dump(profile, f, indent=2)
+    except Exception as e:
+        logging.debug("save_inspection_profile: %s", e)
+
+
+def normalize_runtime_host(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    return (parsed.hostname or raw.strip().strip("/")).strip()
+
+
+def format_runtime_host_for_url(host: str) -> str:
+    text = normalize_runtime_host(host)
+    if ":" in text and not text.startswith("["):
+        return f"[{text}]"
+    return text
+
+
+def load_jetson_pin_catalog():
+    if not hasattr(load_jetson_pin_catalog, "_cache"):
+        load_jetson_pin_catalog._cache = _load_json_file(_jetson_pin_catalog_path(), {"boards": []})
+    return load_jetson_pin_catalog._cache
+
+
+def jetson_board_catalog():
+    data = load_jetson_pin_catalog()
+    boards = data.get("boards") if isinstance(data, dict) else []
+    return boards if isinstance(boards, list) else []
+
+
+def jetson_board_pins(board_id: str):
+    for board in jetson_board_catalog():
+        if board.get("id") == board_id:
+            pins = board.get("pins")
+            return pins if isinstance(pins, list) else []
+    return []
+
+
+def jetson_board_pin_info(board_id: str, board_pin):
+    if board_pin is None:
+        return None
+    try:
+        bp = int(board_pin)
+    except (TypeError, ValueError):
+        return None
+    for pin in jetson_board_pins(board_id):
+        if int(pin.get("board_pin") or 0) == bp:
+            return pin
+    return None
+
+
+def format_jetson_pin_label(pin: dict):
+    board_pin = pin.get("board_pin")
+    cvm = pin.get("cvm") or "GPIO"
+    tegra = pin.get("tegra_soc") or ""
+    parts = [f"BOARD {board_pin}", str(cvm)]
+    if tegra:
+        parts.append(str(tegra))
+    if pin.get("pwm"):
+        parts.append("PWM")
+    return " · ".join(parts)
+
+
+def inspection_pin_display(board_id: str, board_pin):
+    info = jetson_board_pin_info(board_id, board_pin)
+    if not info:
+        return "Disabled"
+    return format_jetson_pin_label(info)
 
 
 def _camera_defaults_path():
@@ -3059,6 +3713,8 @@ def get_camera_defaults():
     """Global camera defaults (updated from Settings, persisted to disk)."""
     if not hasattr(get_camera_defaults, "_defaults"):
         get_camera_defaults._defaults = {
+            "sensor_model": "GENERIC_CSI",
+            "focuser_type": "none",
             "resolution_index": 0,
             "aelock": False,
             "focus_mode": "fixed",  # fixed | manual | auto
@@ -3091,6 +3747,8 @@ def save_camera_defaults_to_disk():
         logging.debug("save_camera_defaults_to_disk: %s", e)
 
 def set_camera_defaults(
+    sensor_model=None,
+    focuser_type=None,
     resolution_index=None,
     aelock=None,
     focus_mode=None,
@@ -3101,6 +3759,10 @@ def set_camera_defaults(
     v4l2_gain=None,
 ):
     d = get_camera_defaults()
+    if sensor_model is not None:
+        d["sensor_model"] = str(sensor_model or "GENERIC_CSI").strip().upper() or "GENERIC_CSI"
+    if focuser_type is not None:
+        d["focuser_type"] = str(focuser_type or "none").strip().lower() or "none"
     if resolution_index is not None:
         d["resolution_index"] = resolution_index
     if aelock is not None:
@@ -3213,10 +3875,12 @@ class VideoThread(QThread):
             sid = int(source) if isinstance(source, int) else (int(source) if str(source).strip().isdigit() else None)
             if sid is not None and platform.system() == "Linux":
                 opts = {**get_camera_defaults(), **(self.camera_options or {})}
-                if opts.get("focus_mode") == "fixed":
+                focuser_type = str(opts.get("focuser_type") or csi_sensor_default_focuser(opts.get("sensor_model"))).strip().lower()
+                script_name = focus_scripts_for_focuser(focuser_type).get("focus")
+                if opts.get("focus_mode") == "fixed" and focuser_available(focuser_type) and script_name:
                     pos = int(opts.get("focus_position", 512))
                     bus = int(opts.get("i2c_bus", 10))
-                    script_path = os.path.join(os.path.dirname(__file__), "..", "scripts", "focus_imx519.py")
+                    script_path = os.path.join(os.path.dirname(__file__), "..", "scripts", script_name)
                     root = os.path.dirname(os.path.dirname(__file__))
                     if os.path.exists(script_path):
                         r = subprocess.run(
@@ -3351,7 +4015,32 @@ class StatsThread(QThread):
             self.terminate()
             self.wait(1500)
 
+class HardwareWorker(QThread):
+    finished = Signal(dict)
+    def run(self):
+        try:
+            # Gather data in background to avoid UI lag
+            cams = list_cameras() or []
+            peers = get_zerotier_peers() or []
+            local_ips = get_zerotier_local_ips() or []
+            devices = DBManager().get_devices() or []
+            my_nid = get_zerotier_local_node_id() or ""
+            managed_prefixes = get_zerotier_managed_ipv4_prefixes() or []
+            
+            self.finished.emit({
+                "cams": cams,
+                "peers": peers,
+                "local_ips": local_ips,
+                "devices": devices,
+                "my_nid": my_nid,
+                "zt_prefs": managed_prefixes
+            })
+        except Exception as e:
+            print(f"HardwareWorker error: {e}")
+            self.finished.emit({})
+
 class App(QMainWindow):
+
     def __init__(self):
         super().__init__(); self.resize(1200, 800)
         self._production_mode = is_production_mode()
@@ -3360,13 +4049,14 @@ class App(QMainWindow):
         if self._production_mode:
             _title += " · Production"
         self.setWindowTitle(_title)
-        self.is_dark = True
+        self.is_dark = True # Forced Industrial Dark
         log.info(
             "Starting (production=%s remote_ip_locked=%s)",
             self._production_mode,
             self._remote_host_locked,
         )
         self.db = DBManager()
+        prefs = load_app_prefs()
         self._camera_card_geom = self._load_camera_card_geom()
         self._camera_geom_save_timer = None
         self._ssh_sessions = {}
@@ -3377,6 +4067,31 @@ class App(QMainWindow):
         self._remote_zt_node_by_session = {}
         self.active_remote_host = None # Global active node IP for Docker/Cameras
         self.active_cids = set(); self.active_srcs = set()
+        self._camera_preview_enabled_sources = set()
+        self._sidebar_compact = bool(prefs.get("sidebar_compact", True))
+        self._sidebar_width_compact = 108
+        self._sidebar_width_expanded = 286
+        self._nav_specs = []
+        self._auto_camera_preview_on_launch = bool(prefs.get("auto_camera_preview_on_launch", False))
+        self._background_health_checks_enabled = bool(prefs.get("background_health_checks_enabled", False))
+        self._check_remote_on_settings_open = bool(prefs.get("check_remote_on_settings_open", False))
+        self._scheduler_policy = str(prefs.get("scheduler_policy", "manual")).strip().lower()
+        if self._scheduler_policy not in ("manual", "balanced", "full", "custom"):
+            self._scheduler_policy = "manual"
+        self._ui_role_mode = str(prefs.get("ui_role_mode", "operator")).strip().lower()
+        if self._ui_role_mode not in ("operator", "engineering"):
+            self._ui_role_mode = "operator"
+        self._confirm_engineering_mode_switch = bool(
+            prefs.get("confirm_engineering_mode_switch", True)
+        )
+        self._operator_quick_tour_seen = bool(prefs.get("operator_quick_tour_seen", False))
+        self._operator_tour_timers = []
+        self._show_setup_wizard_on_launch = bool(prefs.get("show_setup_wizard_on_launch", False))
+        self._devices_last_scan_ts = 0.0
+        self._devices_scan_ttl_sec = 45.0
+        self._inspection_runtime_state = {}
+        self._inspection_runtime_online = None
+        self._inspection_runtime_last_error = ""
         c = QWidget()
         c.setObjectName("MainCanvas")
         self.setCentralWidget(c)
@@ -3387,9 +4102,24 @@ class App(QMainWindow):
         self.stats = StatsThread(); self.stats.updated.connect(self.upd_stats); self.stats.start()
         QTimer.singleShot(300, self.load_data)
         QTimer.singleShot(600, self._schedule_remote_status_check)
-        # check_docker runs only on manual refresh; on startup load from DB only (avoid duplicate cards)
-        QTimer.singleShot(800, self._show_onboarding_wizard)
-        QTimer.singleShot(6000, self._check_for_updates)
+        # Setup wizard is opt-in on launch; avoid blocking startup for operators.
+        if self._show_setup_wizard_on_launch:
+            QTimer.singleShot(800, self._show_onboarding_wizard)
+        updates_enabled = bool(self._background_health_checks_enabled)
+        if self._scheduler_policy == "manual":
+            updates_enabled = False
+        elif self._scheduler_policy in ("balanced", "full"):
+            updates_enabled = True
+        if updates_enabled:
+            QTimer.singleShot(6000, self._check_for_updates)
+        # Start runtime health polling immediately so camera state is ready
+        # before the user opens the Cameras page for the first time.
+        self._inspection_runtime_timer = QTimer(self)
+        self._inspection_runtime_timer.setInterval(5000)
+        self._inspection_runtime_timer.timeout.connect(self._safe_refresh_camera_runtime)
+        if self._scheduler_policy in ("manual", "balanced", "full"):
+            self._apply_scheduler_policy(self._scheduler_policy, persist=False, notify=False)
+        self._apply_background_health_checks_policy(run_initial_check=True)
         self._setup_shortcuts()
         
         # Ensure it fits the screen properly
@@ -3470,823 +4200,649 @@ class App(QMainWindow):
             self.add_docker_card(name, img, cid, running=running, save=False, host=host)
 
     def init_ui(self):
-        sb = QFrame(); sb.setObjectName("Sidebar"); sb.setFixedWidth(332)
-        sl = QVBoxLayout(sb); sl.setContentsMargins(22, 32, 22, 20); sl.setSpacing(10)
-        
-        # Professional Logo Branding
-        _logo_px = 92
-        l_box = QHBoxLayout(); l_box.setContentsMargins(0, 0, 0, 28); l_box.setSpacing(18)
-        logo_img = QLabel(); logo_img.setFixedSize(_logo_px, _logo_px)
+        self.sidebar_frame = QFrame()
+        self.sidebar_frame.setObjectName("Sidebar")
+        self.sidebar_frame.setFixedWidth(
+            self._sidebar_width_compact if self._sidebar_compact else self._sidebar_width_expanded
+        )
+        self.sidebar_frame.setProperty("compact", self._sidebar_compact)
+        sl = QVBoxLayout(self.sidebar_frame)
+        sl.setContentsMargins(14, 18, 14, 16)
+        sl.setSpacing(10)
+
+        logo_row = QHBoxLayout()
+        logo_row.setContentsMargins(0, 0, 0, 10)
+        logo_row.setSpacing(10)
+        self._sidebar_logo_img = QLabel()
+        self._sidebar_logo_img.setFixedSize(44, 44)
         pix = QPixmap(resource_path("visiondock.svg"))
         if not pix.isNull():
-            logo_img.setPixmap(
-                pix.scaled(_logo_px, _logo_px, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self._sidebar_logo_img.setPixmap(
+                pix.scaled(44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             )
-        l_box.addWidget(logo_img, 0, Qt.AlignmentFlag.AlignTop)
-        brand_text = QVBoxLayout()
-        brand_text.setSpacing(5)
-        brand_text.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        logo_txt = QLabel("VisionDock")
-        logo_txt.setObjectName("BrandTitle")
-        brand_tag = QLabel("INDUSTRIAL VISION")
-        brand_tag.setObjectName("BrandTagline")
-        brand_text.addWidget(logo_txt)
-        brand_text.addWidget(brand_tag)
-        l_box.addLayout(brand_text)
-        l_box.addStretch()
-        sl.addLayout(l_box)
-        
+        logo_row.addWidget(self._sidebar_logo_img, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._sidebar_brand_wrap = QWidget()
+        brand_text = QVBoxLayout(self._sidebar_brand_wrap)
+        brand_text.setContentsMargins(0, 0, 0, 0)
+        brand_text.setSpacing(2)
+        self._sidebar_brand_title = QLabel("VisionDock")
+        self._sidebar_brand_title.setObjectName("BrandTitle")
+        self._sidebar_brand_tag = QLabel("INDUSTRIAL VISION")
+        self._sidebar_brand_tag.setObjectName("BrandTagline")
+        brand_text.addWidget(self._sidebar_brand_title)
+        brand_text.addWidget(self._sidebar_brand_tag)
+        logo_row.addWidget(self._sidebar_brand_wrap, 1)
+        sl.addLayout(logo_row)
+
+        toggle_row = QHBoxLayout()
+        toggle_row.setContentsMargins(0, 0, 0, 6)
+        self._sidebar_toggle_btn = QPushButton("→")
+        self._sidebar_toggle_btn.setObjectName("SidebarToggle")
+        self._sidebar_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_toggle_btn.clicked.connect(self._toggle_sidebar_compact_mode)
+        toggle_row.addWidget(self._sidebar_toggle_btn)
+        sl.addLayout(toggle_row)
+
+        self._sidebar_scope_label = QLabel("FLEET READY")
+        self._sidebar_scope_label.setObjectName("SidebarScopeBadge")
+        sl.addWidget(self._sidebar_scope_label, 0, Qt.AlignmentFlag.AlignLeft)
+
         self.eco_mode = False
         self.tabs = FadeStackedWidget(); self.navs = []
-        # Order: Home, Cameras, Workspaces, Devices, Library, Settings
-        nav_names = ["Home", "Cameras", "Workspaces", "Devices", "Library", "Settings"]
-        for i, t in enumerate(nav_names):
-            b = QPushButton(t); b.setObjectName("NavTab"); b.setCheckable(True); b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setMinimumHeight(46); b.setMinimumWidth(210)
-            b.clicked.connect(lambda _, x=i: self.switch(x)); sl.addWidget(b); self.navs.append(b)
-        sl.addStretch(); host = QLabel(platform.node()); host.setObjectName("SidebarFootnote"); sl.addWidget(host)
-        self.main.addWidget(sb); self.main.addWidget(self.tabs)
+        # Order: Dashboard, Inspection, Models, Devices, Results, Settings
+        self._nav_specs = [
+            ("DB", t("nav.dashboard", "Dashboard")),
+            ("IN", t("nav.inspection", "Inspection")),
+            ("MD", t("nav.models", "Models")),
+            ("DV", t("nav.devices", "Devices")),
+            ("RS", t("nav.results", "Results")),
+            ("ST", t("nav.settings", "Settings")),
+        ]
+        for i, (indicator, nav_label) in enumerate(self._nav_specs):
+            b = QPushButton(nav_label)
+            b.setObjectName("NavTab")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(46)
+            b.setToolTip(nav_label)
+            b.setProperty("navIndicator", indicator)
+            b.setProperty("navLabel", nav_label)
+            b.clicked.connect(lambda _, x=i: self.switch(x))
+            sl.addWidget(b)
+            self.navs.append(b)
+        sl.addStretch()
+        self._sidebar_host_label = QLabel(platform.node())
+        self._sidebar_host_label.setObjectName("SidebarFootnote")
+        sl.addWidget(self._sidebar_host_label)
+        self.main.addWidget(self.sidebar_frame)
+        self.main.addWidget(self.tabs)
         # Stack order matches nav: 0=home, 1=cams, 2=docker, 3=devices, 4=library, 5=settings
         self.tabs.addWidget(self.page_home()); self.tabs.addWidget(self.page_cams()); self.tabs.addWidget(self.page_docker()); self.tabs.addWidget(self.page_devices()); self.tabs.addWidget(self.page_library()); self.tabs.addWidget(self.page_settings())
+        self._apply_sidebar_mode(refresh_labels=True)
         self.navs[0].setChecked(True)
 
-    def page_library(self):
-        self._lib_paths = []
-        self._lib_recording_dir = recordings_root_dir()
-        w = QWidget()
-        l = QVBoxLayout(w)
-        l.setContentsMargins(40, 40, 40, 40)
-        l.setSpacing(0)
-        head = QVBoxLayout()
-        head.setSpacing(6)
-        title_row = QHBoxLayout()
-        pt = QLabel("Library")
-        pt.setObjectName("PageTitle")
-        title_row.addWidget(pt)
-        title_row.addStretch()
-        title_row.addWidget(make_icon_refresh_button(self.refresh_library, "Refresh"))
-        head.addLayout(title_row)
-        sub = QLabel("Newest media first. Filter by file or folder name.")
-        sub.setObjectName("PageSubtitle")
-        sub.setWordWrap(True)
-        head.addWidget(sub)
-        l.addLayout(head)
-        l.addSpacing(14)
+    def _toggle_sidebar_compact_mode(self):
+        self._sidebar_compact = not bool(getattr(self, "_sidebar_compact", True))
+        save_app_prefs_sidebar_compact(self._sidebar_compact)
+        self._apply_sidebar_mode(refresh_labels=True)
 
-        hint = QLabel(
-            "Stored under gui/recordings/ (one subfolder per camera; older flat files in the root still list here)."
+    def _apply_sidebar_mode(self, refresh_labels=False):
+        compact = bool(getattr(self, "_sidebar_compact", True))
+        sidebar = getattr(self, "sidebar_frame", None)
+        if sidebar is not None:
+            sidebar.setFixedWidth(self._sidebar_width_compact if compact else self._sidebar_width_expanded)
+            sidebar.setProperty("compact", compact)
+            style = sidebar.style()
+            if style is not None:
+                style.unpolish(sidebar)
+                style.polish(sidebar)
+            sidebar.update()
+
+        toggle_btn = getattr(self, "_sidebar_toggle_btn", None)
+        if toggle_btn is not None:
+            toggle_btn.setText("→" if compact else "←")
+            toggle_btn.setToolTip("Expand sidebar" if compact else "Collapse sidebar")
+
+        brand_wrap = getattr(self, "_sidebar_brand_wrap", None)
+        if brand_wrap is not None:
+            brand_wrap.setVisible(not compact)
+        host_lbl = getattr(self, "_sidebar_host_label", None)
+        if host_lbl is not None:
+            host_lbl.setVisible(not compact)
+        scope_lbl = getattr(self, "_sidebar_scope_label", None)
+        if scope_lbl is not None:
+            scope_lbl.setText("FLEET" if compact else "FLEET READY")
+
+        for btn in getattr(self, "navs", []):
+            if refresh_labels:
+                full_label = str(btn.property("navLabel") or "").strip()
+                indicator = str(btn.property("navIndicator") or "").strip()
+                btn.setText(indicator if compact else full_label)
+                btn.setToolTip(full_label)
+            btn.setProperty("compact", compact)
+            bstyle = btn.style()
+            if bstyle is not None:
+                bstyle.unpolish(btn)
+                bstyle.polish(btn)
+            btn.update()
+
+    def _apply_background_health_checks_policy(self, run_initial_check=False):
+        enabled = bool(getattr(self, "_background_health_checks_enabled", False))
+        timer = getattr(self, "_inspection_runtime_timer", None)
+        if timer is not None:
+            if enabled and not timer.isActive():
+                timer.start()
+            elif not enabled and timer.isActive():
+                timer.stop()
+        if enabled and run_initial_check:
+            QTimer.singleShot(1200, self._safe_refresh_camera_runtime)
+
+    def _scheduler_presets(self):
+        return {
+            "manual": {
+                "background_health_checks_enabled": False,
+                "auto_camera_preview_on_launch": False,
+                "check_remote_on_settings_open": False,
+            },
+            "balanced": {
+                "background_health_checks_enabled": True,
+                "auto_camera_preview_on_launch": False,
+                "check_remote_on_settings_open": False,
+            },
+            "full": {
+                "background_health_checks_enabled": True,
+                "auto_camera_preview_on_launch": True,
+                "check_remote_on_settings_open": True,
+            },
+        }
+
+    def _apply_scheduler_policy(self, policy: str, persist=True, notify=False):
+        policy_norm = str(policy or "").strip().lower()
+        presets = self._scheduler_presets()
+        if policy_norm not in presets:
+            return
+        p = presets[policy_norm]
+        self._background_health_checks_enabled = bool(p["background_health_checks_enabled"])
+        self._auto_camera_preview_on_launch = bool(p["auto_camera_preview_on_launch"])
+        self._check_remote_on_settings_open = bool(p["check_remote_on_settings_open"])
+        self._scheduler_policy = policy_norm
+        if persist:
+            save_app_prefs_value("scheduler_policy", self._scheduler_policy)
+            save_app_prefs_flag("background_health_checks_enabled", self._background_health_checks_enabled)
+            save_app_prefs_flag("auto_camera_preview_on_launch", self._auto_camera_preview_on_launch)
+            save_app_prefs_flag("check_remote_on_settings_open", self._check_remote_on_settings_open)
+        self._apply_background_health_checks_policy(run_initial_check=self._background_health_checks_enabled)
+        self._refresh_scheduler_profile_control()
+        self._refresh_settings_hub()
+        if notify:
+            self.notify_info(f"Scheduler profile applied: {self._scheduler_policy}.")
+
+    def set_scheduler_profile(self, policy: str):
+        self._apply_scheduler_policy(policy, persist=True, notify=True)
+
+    def _mark_scheduler_policy_custom(self):
+        if getattr(self, "_scheduler_policy", "manual") == "custom":
+            return
+        self._scheduler_policy = "custom"
+        save_app_prefs_value("scheduler_policy", "custom")
+        self._refresh_scheduler_profile_control()
+
+    def _refresh_scheduler_profile_control(self):
+        combo = getattr(self, "_maintenance_scheduler_profile_combo", None)
+        target = getattr(self, "_scheduler_policy", "manual")
+        if combo is not None:
+            idx = combo.findData(target)
+            if idx < 0:
+                idx = combo.findData("custom")
+            if idx >= 0:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+        summary = getattr(self, "_maintenance_scheduler_summary_label", None)
+        if summary is not None:
+            text_by_profile = {
+                "manual": "Manual: no background checks, no preview auto-start, no automatic remote check.",
+                "balanced": "Balanced: background checks enabled, preview auto-start off, Settings-open check off.",
+                "full": "Full: background checks, preview auto-start, and Settings-open remote checks enabled.",
+                "custom": "Custom: one or more automation switches differ from the standard presets.",
+            }
+            summary.setText(text_by_profile.get(target, text_by_profile["custom"]))
+
+    def toggle_background_health_checks(self, enabled):
+        self._mark_scheduler_policy_custom()
+        self._background_health_checks_enabled = bool(enabled)
+        save_app_prefs_flag("background_health_checks_enabled", self._background_health_checks_enabled)
+        self._apply_background_health_checks_policy(run_initial_check=self._background_health_checks_enabled)
+        self.notify_info(
+            "Background runtime checks enabled."
+            if self._background_health_checks_enabled
+            else "Background runtime checks disabled."
         )
-        hint.setObjectName("CaptionMuted")
-        hint.setWordWrap(True)
-        l.addWidget(hint)
-        l.addSpacing(12)
 
-        lib_card = QFrame()
-        lib_card.setObjectName("InfoCard")
-        lib_cl = QVBoxLayout(lib_card)
-        lib_cl.setContentsMargins(20, 20, 20, 20)
-        lib_cl.setSpacing(12)
+    def toggle_camera_preview_autostart(self, enabled):
+        self._mark_scheduler_policy_custom()
+        self._auto_camera_preview_on_launch = bool(enabled)
+        save_app_prefs_flag("auto_camera_preview_on_launch", self._auto_camera_preview_on_launch)
+        self.notify_info(
+            "Camera preview auto-start enabled."
+            if self._auto_camera_preview_on_launch
+            else "Camera preview auto-start disabled."
+        )
 
-        tool = QHBoxLayout()
-        self.lib_search = QLineEdit()
-        self.lib_search.setPlaceholderText("Filter by file or folder name...")
-        self.lib_search.setMinimumWidth(200)
-        self.lib_search.setAccessibleName("Filter library items by name")
-        self.lib_search.textChanged.connect(lambda _: self._render_library_items())
-        lib_search_shell = SearchFieldShell(self.lib_search)
-        lib_search_shell.setMinimumWidth(280)
-        tool.addWidget(lib_search_shell, 1)
-        lib_cl.addLayout(tool)
+    def toggle_remote_check_on_settings_open(self, enabled):
+        self._mark_scheduler_policy_custom()
+        self._check_remote_on_settings_open = bool(enabled)
+        save_app_prefs_flag("check_remote_on_settings_open", self._check_remote_on_settings_open)
+        self.notify_info(
+            "Remote status check on Settings open enabled."
+            if self._check_remote_on_settings_open
+            else "Remote status check on Settings open disabled."
+        )
 
-        sa = QScrollArea()
-        sa.setWidgetResizable(True)
-        sa.setStyleSheet("background: transparent; border: none;")
-        self.lib_widget = QWidget()
-        self.lib_flow = FlowLayout(self.lib_widget)
-        sa.setWidget(self.lib_widget)
-        polish_scroll_area(sa)
-        lib_cl.addWidget(sa)
-        l.addWidget(lib_card, 1)
-        QTimer.singleShot(400, self.refresh_library)
+    def set_ui_role_mode(self, role: str):
+        role_norm = str(role or "").strip().lower()
+        if role_norm not in ("operator", "engineering"):
+            role_norm = "operator"
+        current_role = getattr(self, "_ui_role_mode", "operator")
+        if (
+            role_norm == "engineering"
+            and current_role != "engineering"
+            and bool(getattr(self, "_confirm_engineering_mode_switch", True))
+        ):
+            mb = QMessageBox(self)
+            mb.setIcon(QMessageBox.Icon.Warning)
+            mb.setWindowTitle("Switch to Engineering mode")
+            mb.setText(
+                "Engineering mode unlocks advanced runtime, network, and hardware controls.\n"
+                "Use it only for commissioning and maintenance."
+            )
+            mb.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            mb.setDefaultButton(QMessageBox.StandardButton.No)
+            noask = QCheckBox("Do not ask again")
+            mb.setCheckBox(noask)
+            if mb.exec() != QMessageBox.StandardButton.Yes:
+                role_switch = getattr(self, "_settings_role_switch", None)
+                if role_switch is not None:
+                    role_switch.blockSignals(True)
+                    role_switch.setChecked(False)
+                    role_switch.blockSignals(False)
+                return
+            if noask.isChecked():
+                self._confirm_engineering_mode_switch = False
+                save_app_prefs_flag("confirm_engineering_mode_switch", False)
+        if role_norm == getattr(self, "_ui_role_mode", "operator"):
+            self._apply_settings_role_mode()
+            return
+        self._ui_role_mode = role_norm
+        save_app_prefs_value("ui_role_mode", self._ui_role_mode)
+        if self._ui_role_mode != "operator":
+            self._cancel_operator_quick_tour()
+        self._apply_settings_role_mode()
+        if self._ui_role_mode == "operator":
+            tabs = getattr(self, "tabs", None)
+            if tabs is not None and tabs.currentIndex() == 5:
+                self._show_operator_quick_tour_once()
+        self.notify_info(
+            "Engineering mode enabled."
+            if self._ui_role_mode == "engineering"
+            else "Operator mode enabled."
+        )
+
+    def _apply_settings_role_mode(self):
+        engineering_mode = bool(getattr(self, "_ui_role_mode", "operator") == "engineering")
+        role_switch = getattr(self, "_settings_role_switch", None)
+        if role_switch is not None:
+            role_switch.blockSignals(True)
+            role_switch.setChecked(engineering_mode)
+            role_switch.blockSignals(False)
+        advanced = getattr(self, "_settings_advanced_section", None)
+        if advanced is not None and hasattr(advanced, "content") and hasattr(advanced, "toggle_btn"):
+            advanced.content.setVisible(engineering_mode)
+            advanced.toggle_btn.setText("▼" if engineering_mode else "▶")
+        eng_btn = getattr(self, "_settings_hub_engineering_btn", None)
+        if eng_btn is not None:
+            eng_btn.setVisible(engineering_mode)
+        tabs = getattr(self, "_settings_tabs", None)
+        eng_idx = getattr(self, "_settings_engineering_tab_index", None)
+        if tabs is not None and isinstance(eng_idx, int):
+            try:
+                tabs.tabBar().setTabVisible(eng_idx, engineering_mode)
+            except Exception:
+                pass
+            if (not engineering_mode) and tabs.currentIndex() == eng_idx:
+                tabs.setCurrentIndex(0)
+        role_hint = getattr(self, "_settings_role_hint_label", None)
+        if role_hint is not None:
+            if engineering_mode:
+                role_hint.setText(
+                    "Engineering mode: advanced runtime, network, and hardware controls are unlocked."
+                )
+            else:
+                role_hint.setText(
+                    "Operator mode: advanced runtime, network, and hardware controls remain locked for safety."
+                )
+        lock_hint = getattr(self, "_settings_lock_hint_label", None)
+        if lock_hint is not None:
+            lock_hint.setVisible(not engineering_mode)
+        self._apply_operator_role_restrictions()
+
+    def _apply_operator_role_restrictions(self):
+        engineering_mode = bool(getattr(self, "_ui_role_mode", "operator") == "engineering")
+        restricted_names = (
+            "remote_host_input",
+            "_zt_nwid_input",
+            "_zt_join_btn",
+            "_zt_leave_btn",
+            "_maintenance_import_btn",
+            "_inspection_camera_name_input",
+            "_inspection_board_combo",
+            "_inspection_backend_combo",
+            "_inspection_trigger_mode_combo",
+            "_inspection_runtime_host_input",
+            "_inspection_runtime_port_spin",
+            "_inspection_active_level_combo",
+            "_inspection_camera_backend_combo",
+            "_inspection_camera_model_combo",
+            "_inspection_camera_focuser_combo",
+            "_inspection_camera_sensor_spin",
+            "_inspection_camera_device_spin",
+            "_inspection_camera_width_spin",
+            "_inspection_camera_height_spin",
+            "_inspection_camera_fps_spin",
+            "_inspection_camera_burst_spin",
+            "_inspection_camera_source_input",
+            "_inspection_gpio_enable_switch",
+            "_inspection_trigger_pin_combo",
+            "_inspection_pass_pin_combo",
+            "_inspection_fail_pin_combo",
+            "_inspection_fault_pin_combo",
+            "_inspection_busy_pin_combo",
+            "_inspection_camera_apply_preset_btn",
+            "_inspection_pin_reload_btn",
+        )
+        for name in restricted_names:
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(engineering_mode)
+                widget.setProperty("roleLocked", (not engineering_mode))
+                if not engineering_mode:
+                    widget.setToolTip("This control requires Engineering mode.")
+                else:
+                    widget.setToolTip("")
+                style = widget.style()
+                if style is not None:
+                    style.unpolish(widget)
+                    style.polish(widget)
+                widget.update()
+            lock_labels = getattr(self, "_settings_lock_labels", {}) or {}
+            lock_lbl = lock_labels.get(name)
+            if lock_lbl is not None:
+                base = str(lock_lbl.property("baseText") or "").strip() or lock_lbl.text().replace("🔒 ", "")
+                lock_lbl.setText(base if engineering_mode else f"🔒 {base}")
+
+    def _show_operator_quick_tour_once(self):
+        self._cancel_operator_quick_tour()
+        if getattr(self, "_ui_role_mode", "operator") != "operator":
+            return
+        if bool(getattr(self, "_operator_quick_tour_seen", False)):
+            return
+        self._operator_quick_tour_seen = True
+        save_app_prefs_flag("operator_quick_tour_seen", True)
+        self.notify_info("Operator mode is active. Advanced controls remain locked for safety.")
+        self._queue_operator_tour_message(900, "Use 'Manual' automation profile for the most predictable runtime behavior.")
+        self._queue_operator_tour_message(1800, "Keep camera preview auto-start off unless your line requires continuous visual monitoring.")
+        self._queue_operator_tour_message(2700, "Need commissioning changes? Switch to Engineering mode in Settings.")
+
+    def _queue_operator_tour_message(self, delay_ms: int, message: str):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._emit_operator_tour_message(message))
+        self._operator_tour_timers.append(timer)
+        timer.start(max(0, int(delay_ms)))
+
+    def _emit_operator_tour_message(self, message: str):
+        if getattr(self, "_ui_role_mode", "operator") != "operator":
+            return
+        self.notify_info(message)
+
+    def _cancel_operator_quick_tour(self):
+        timers = list(getattr(self, "_operator_tour_timers", []) or [])
+        for timer in timers:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except Exception:
+                pass
+        self._operator_tour_timers = []
+
+    def page_home(self):
+        w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(40, 40, 40, 40); l.setSpacing(0)
+        pt = QLabel(t("nav.dashboard", "Dashboard")); pt.setObjectName("PageTitle"); l.addWidget(pt); l.addSpacing(30)
+        
+        sa = QScrollArea(); sa.setWidgetResizable(True); sa.setStyleSheet("background:transparent; border:none;")
+        cnt = QWidget(); fl = FlowLayout(cnt); fl.setContentsMargins(0,0,0,0); fl.setSpacing(20)
+        
+        def mk_card(title, tag, page_idx):
+            c = QFrame(); c.setObjectName("InfoCard")
+            c.setMinimumSize(286, 182)
+            c.setMaximumSize(334, 210)
+            c.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            cl = QVBoxLayout(c); cl.setContentsMargins(25,25,25,25); cl.setSpacing(15)
+            
+            # Stylized Badge instead of Emoji
+            bh = QHBoxLayout()
+            badge = QFrame(); badge.setFixedSize(40, 40)
+            badge.setObjectName("HomeBadgeFrame")
+            bl = QVBoxLayout(badge); bl.setAlignment(Qt.AlignmentFlag.AlignCenter); bl.setContentsMargins(0,0,0,0)
+            final_obj = QLabel(tag); final_obj.setObjectName("HomeBadgeText"); bl.addWidget(final_obj)
+            bh.addWidget(badge); bh.addStretch(); cl.addLayout(bh)
+            
+            cl.addStretch()
+            tl = QLabel(title); tl.setObjectName("HomeCardTitle"); cl.addWidget(tl)
+            sl = QLabel(t("home.subtitle", "Access and manage module")); sl.setObjectName("CaptionMutedSm"); cl.addWidget(sl)
+            
+            c.setCursor(Qt.CursorShape.PointingHandCursor)
+            c.mousePressEvent = lambda e: self.switch(page_idx)
+            return c
+
+        fl.addWidget(mk_card(t("home.card.inspection", "Inspection"), "CAM", 1))
+        fl.addWidget(mk_card(t("home.card.models", "Model Packages"), "AI", 2))
+        fl.addWidget(mk_card(t("home.card.devices", "Devices"), "NET", 3))
+        fl.addWidget(mk_card(t("home.card.results", "Results"), "HIS", 4))
+        
+        sa.setWidget(cnt); l.addWidget(sa, 1); return w
+
+    def page_cams(self):
+        return build_inspection_page(self, _inspection_page_helpers())
+
+    def refresh_cams(self):
+        self.refresh_cameras()
+
+    def page_docker(self):
+        return build_models_page(self, _models_page_helpers())
+
+    def page_devices(self):
+        """Unified Hardware Hub - Device-Centric Grid"""
+        w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(40, 40, 40, 40); l.setSpacing(0)
+        hdr = QHBoxLayout()
+        pt = QLabel("Devices"); pt.setObjectName("PageTitle"); hdr.addWidget(pt)
+        hdr.addStretch(1)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("BtnSecondary")
+        refresh_btn.setFixedHeight(32)
+        refresh_btn.clicked.connect(lambda: self.refresh_devices_page(force=True))
+        hdr.addWidget(refresh_btn)
+        l.addLayout(hdr); l.addSpacing(22)
+        sa = QScrollArea(); sa.setWidgetResizable(True); sa.setStyleSheet("background: transparent; border: none;")
+        cnt = QWidget(); self.dev_hub_layout = FlowLayout(cnt); self.dev_hub_layout.setContentsMargins(0, 0, 0, 0); self.dev_hub_layout.setSpacing(25)
+        sa.setWidget(cnt); l.addWidget(sa, 1)
+        QTimer.singleShot(100, lambda: self.refresh_devices_page(force=True))
         return w
 
-    def refresh_library(self):
-        p = getattr(self, "_lib_recording_dir", None) or recordings_root_dir()
-        self._lib_recording_dir = p
-        self._lib_paths = collect_recording_file_paths(p)
-        self._render_library_items()
+    def page_library(self):
+        return build_results_page(self, _results_page_helpers())
 
-    def _library_folder_label(self, fpath: str):
-        """Subfolder name under recordings, or None for legacy root-level files."""
-        base = os.path.normpath(getattr(self, "_lib_recording_dir", "") or "")
-        if not base or not fpath:
-            return None
-        try:
-            fpath = os.path.normpath(fpath)
-            rel = os.path.relpath(fpath, base)
-            if rel.startswith(".."):
-                return None
-            parts = rel.split(os.sep)
-            if len(parts) >= 2:
-                return parts[0]
-        except ValueError:
-            pass
-        return None
-
-    def _render_library_items(self):
-        fl = getattr(self, "lib_flow", None)
-        if fl is None:
+    def _delete_selected_result(self):
+        btn = getattr(self, "_results_detail_delete_btn", None)
+        inspection_id = btn.property("inspection_id") if btn else ""
+        if not inspection_id:
+            self.notify_warning("No result selected to delete")
             return
-        while fl.count():
-            it = fl.takeAt(0)
-            w = it.widget() if it else None
+            
+        if self._runtime_is_local():
+            import runtime.storage as st
+            self.notify_success(f"Deleting local record {inspection_id}...")
+            st.delete_result(inspection_id)
+            self.refresh_library()
+            return
+        if getattr(self, "_results_delete_thread", None) and self._results_delete_thread.isRunning():
+            return
+            
+        url = self._inspection_runtime_url(f"/result/{inspection_id}")
+        self._results_delete_thread = InspectionRuntimeRequestThread(url, method="DELETE", timeout=5.0)
+        self._results_delete_thread.result_signal.connect(lambda r: [self.notify_success("Record deleted"), self.refresh_library()])
+        self._results_delete_thread.error_signal.connect(lambda e: self.notify_error(f"Failed to delete: {e}"))
+        self._results_delete_thread.start()
+
+    def _delete_result_record(self, inspection_id: str):
+        target = str(inspection_id or "").strip()
+        if not target:
+            self.notify_warning("No result selected to delete")
+            return
+        if self._runtime_is_local():
+            import runtime.storage as st
+            st.delete_result(target)
+            self.notify_success(f"Deleted result {target}")
+            self.refresh_library()
+            return
+        if getattr(self, "_results_delete_thread", None) and self._results_delete_thread.isRunning():
+            return
+        url = self._inspection_runtime_url(f"/result/{target}")
+        self._results_delete_thread = InspectionRuntimeRequestThread(url, method="DELETE", timeout=5.0)
+        self._results_delete_thread.result_signal.connect(lambda _r: [self.notify_success(f"Deleted result {target}"), self.refresh_library()])
+        self._results_delete_thread.error_signal.connect(lambda e: self.notify_error(f"Failed to delete: {e}"))
+        self._results_delete_thread.start()
+
+    def refresh_library(self):
+        lay = getattr(self, "media_hub_layout", None)
+        if not lay:
+            return
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
             if w:
                 w.deleteLater()
 
-        full = list(getattr(self, "_lib_paths", []) or [])
-        paths = list(full)
-        paths.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-
-        q = (getattr(self, "lib_search", None) and self.lib_search.text() or "").strip().lower()
-        if q:
-            paths = [
-                p
-                for p in paths
-                if q in os.path.basename(p).lower()
-                or q in (self._library_folder_label(p) or "").lower()
-            ]
-
-        if not paths:
-            rec = getattr(self, "_lib_recording_dir", "")
-            if q and full:
-                msg = "No files match your search."
-            elif not os.path.isdir(rec):
-                msg = "Recordings will appear after the first snapshot or REC from a camera."
-            else:
-                msg = "No files yet. Use Snapshot or REC on a camera card; each camera has its own folder."
-            empty = QLabel(msg)
-            empty.setObjectName("CaptionMuted")
-            empty.setWordWrap(True)
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            empty.setMinimumHeight(160)
-            empty.setMinimumWidth(360)
-            fl.addWidget(empty)
-            self.lib_widget.updateGeometry()
-            return
-
-        for fpath in paths[:80]:
-            fl.addWidget(self._make_media_card(fpath, self._library_folder_label(fpath)))
-        self.lib_widget.updateGeometry()
-
-    def _thumb_for_media(self, fpath: str, target_w: int, target_h: int):
-        ext = os.path.splitext(fpath)[1].lower()
-        if ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
-            pix = QPixmap(fpath)
-            if not pix.isNull():
-                return pix.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-        if ext in (".avi", ".mp4", ".mov", ".mkv", ".webm"):
-            try:
-                cap = cv2.VideoCapture(fpath)
-                ok, frame = cap.read()
-                cap.release()
-                if ok and frame is not None:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    h, w, c = rgb.shape
-                    if h > 0 and w > 0:
-                        qimg = QImage(rgb.data, w, h, c * w, QImage.Format.Format_RGB888).copy()
-                        pm = QPixmap.fromImage(qimg)
-                        return pm.scaled(
-                            target_w, target_h,
-                            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
-            except Exception:
-                pass
-        return QPixmap()
-
-    def _make_media_card(self, fpath: str, folder_label=None) -> QFrame:
-        card = QFrame()
-        card.setObjectName("MediaCard")
-        card.setFixedSize(212, 292)
-        vl = QVBoxLayout(card)
-        vl.setContentsMargins(14, 14, 14, 14)
-        vl.setSpacing(10)
-
-        thumb = QLabel()
-        thumb.setObjectName("MediaThumb")
-        thumb.setFixedSize(184, 118)
-        thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pm = self._thumb_for_media(fpath, 184, 118)
-        ext = os.path.splitext(fpath)[1].lower()
-        if not pm.isNull():
-            thumb.setPixmap(rounded_pixmap(pm, 12))
+        if self._runtime_is_local():
+            records = load_inspection_result_records(limit=60)
         else:
-            thumb.setObjectName("MediaThumbPlaceholder")
-            label = "VIDEO" if ext in (".avi", ".mp4", ".mov", ".mkv", ".webm") else "PHOTO" if ext in (".jpg", ".jpeg", ".png", ".webp") else "FILE"
-            thumb.setText(label)
-        vl.addWidget(thumb)
+            records = load_runtime_result_records(self._inspection_runtime_url("/results"), limit=60)
+            if not records:
+                records = load_inspection_result_records(limit=60)
+        if records:
+            for record in records:
+                decision = str(record.get("decision") or "unknown").strip().lower()
+                image_path = str(record.get("image_path") or "").strip()
+                camera_name = record.get("camera_name") or record.get("station_name") or "Runtime Node"
+                ts = self._format_result_timestamp(record.get("captured_at"))
+                defects = record.get("defect_classes") or []
+                decision_color = {
+                    "pass": "#30D158",
+                    "fail": "#FF453A",
+                    "fault": "#FF453A",
+                    "uncertain": "#FF9F0A",
+                }.get(decision, "#A1A1AA")
 
-        if ext in (".avi", ".mp4", ".mov", ".mkv", ".webm"):
-            _type_str = "VIDEO"
-        elif ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
-            _type_str = "PHOTO"
-        else:
-            _type_str = "FILE"
-        type_badge = QLabel(_type_str)
-        type_badge.setObjectName("MediaTypeTag")
-        vl.addWidget(type_badge)
+                card = QFrame()
+                card.setObjectName("MediaCard")
+                card.setMinimumWidth(252)
+                card.setMaximumWidth(292)
+                card.setFixedHeight(318)
+                card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+                cl = QVBoxLayout(card)
+                cl.setContentsMargins(14, 14, 14, 14)
+                cl.setSpacing(9)
 
-        base = os.path.basename(fpath)
-        nm = QLabel(base)
-        nm.setObjectName("MediaCardTitle")
-        nm.setWordWrap(True)
-        nm.setMaximumHeight(44)
-        vl.addWidget(nm)
-        if folder_label:
-            fd = QLabel(folder_label)
-            fd.setObjectName("FolderSlug")
-            vl.addWidget(fd)
+                preview = QFrame()
+                preview.setObjectName("ResultPreviewFrame")
+                preview.setFixedSize(222, 128)
+                pv_l = QVBoxLayout(preview)
+                pv_l.setContentsMargins(0, 0, 0, 0)
+                pv_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                if image_path and os.path.isfile(image_path):
+                    pix = QPixmap(image_path).scaled(
+                        222,
+                        128,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    img = QLabel()
+                    img.setPixmap(pix)
+                    pv_l.addWidget(img)
+                else:
+                    placeholder = QLabel((decision or "unknown").upper())
+                    placeholder.setObjectName("ResultPlaceholder")
+                    placeholder.setStyleSheet(f"color: {decision_color};")
+                    pv_l.addWidget(placeholder)
+                cl.addWidget(preview)
 
-        try:
-            st = os.stat(fpath)
-            ts = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-            sz_kb = max(1, st.st_size // 1024)
-            sz_txt = f"{sz_kb:,} KB" if st.st_size < 1024 * 1024 else f"{st.st_size / (1024 * 1024):.1f} MB"
-            meta_txt = f"{ts}  ·  {sz_txt}"
-        except OSError:
-            meta_txt = "—"
-        meta = QLabel(meta_txt)
-        meta.setObjectName("MediaCardMeta")
-        vl.addWidget(meta)
+                name_lbl = QLabel(str(camera_name)[:30])
+                name_lbl.setObjectName("ResultCameraName")
+                cl.addWidget(name_lbl)
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
+                meta_lbl = QLabel(f"{(decision or 'unknown').upper()} • {ts}")
+                meta_lbl.setObjectName("ResultDecisionMeta")
+                meta_lbl.setStyleSheet(f"color: {decision_color};")
+                cl.addWidget(meta_lbl)
 
-        def universal_open(p):
-            plat = platform.system()
-            if plat == "Darwin":
-                subprocess.Popen(["open", p])
-            elif plat == "Linux":
-                subprocess.Popen(["xdg-open", p])
-            elif plat == "Windows":
-                os.startfile(p)
+                inspection_cfg = load_inspection_profile().get("inspection") or {}
+                if defects:
+                    details = defects[:2]
+                elif decision == "pass":
+                    details = [inspection_cfg.get("pass_display_label") or "Pass"]
+                elif decision == "fail":
+                    details = [inspection_cfg.get("fail_display_label") or "Fail"]
+                elif decision == "uncertain":
+                    details = [inspection_cfg.get("review_display_label") or "Review required"]
+                else:
+                    details = ["No detail"]
+                details_lbl = QLabel(" · ".join(str(x) for x in details))
+                details_lbl.setObjectName("ResultMetaCompact")
+                details_lbl.setWordWrap(True)
+                cl.addWidget(details_lbl)
 
-        ob = QPushButton("Open")
-        ob.setObjectName("OpenAction")
-        ob.setFixedHeight(30)
-        ob.setCursor(Qt.CursorShape.PointingHandCursor)
-        ob.clicked.connect(lambda _, p=fpath: universal_open(p))
+                dur = int(record.get("duration_ms") or 0)
+                recipe_name = str(record.get("recipe_name") or "default_recipe")
+                model_ver = str(record.get("model_version") or "unassigned")
+                dur_lbl = QLabel(f"Recipe: {recipe_name} • {dur} ms")
+                dur_lbl.setObjectName("ResultMetaCompact")
+                dur_lbl.setWordWrap(True)
+                cl.addWidget(dur_lbl)
+                model_lbl = QLabel(f"Model: {model_ver}")
+                model_lbl.setObjectName("ResultMetaCompact")
+                model_lbl.setWordWrap(True)
+                cl.addWidget(model_lbl)
 
-        cp = QPushButton("Copy")
-        cp.setObjectName("ShellBtn")
-        cp.setFixedHeight(30)
-        cp.setToolTip("Copy full file path to clipboard")
-        cp.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        def _copy_path(p):
-            QApplication.clipboard().setText(p)
-            self.show_toast("Path copied to clipboard")
-
-        cp.clicked.connect(lambda _, p=fpath: _copy_path(p))
-        btn_row.addWidget(ob, 1)
-        btn_row.addWidget(cp, 1)
-
-        if not getattr(self, "_production_mode", False):
-            rm = QPushButton("×")
-            rm.setObjectName("IconCloseSm")
-            rm.setFixedSize(34, 30)
-            rm.setCursor(Qt.CursorShape.PointingHandCursor)
-
-            def do_remove(path):
-                try:
-                    os.remove(path)
-                    self.refresh_library()
-                except OSError as e:
-                    self.show_toast(f"Could not delete: {e}")
-
-            rm.clicked.connect(lambda _, p=fpath: do_remove(p))
-            btn_row.addWidget(rm, 0)
-
-        vl.addLayout(btn_row)
-        return card
-
-    # ── HOME / DASHBOARD PAGE ─────────────────────────────────────────────────
-    def page_home(self):
-        """Dashboard page — ZeroTier status, device/camera summary, quick actions."""
-        w = QWidget(); w.setObjectName("PageHome")
-        root = QVBoxLayout(w); root.setContentsMargins(32, 28, 32, 28); root.setSpacing(24)
-
-        # ── Header ────────────────────────────────────────────────────────────
-        hdr = QHBoxLayout()
-        title = QLabel("Dashboard"); title.setObjectName("PageTitle")
-        subtitle = QLabel("VisionDock overview"); subtitle.setObjectName("CaptionMuted")
-        title_col = QVBoxLayout(); title_col.setSpacing(2)
-        title_col.addWidget(title); title_col.addWidget(subtitle)
-        hdr.addLayout(title_col); hdr.addStretch()
-        refresh_btn = QPushButton("Refresh"); refresh_btn.setObjectName("ShellBtn")
-        refresh_btn.setFixedHeight(32); refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh_btn.clicked.connect(self.refresh_home_page)
-        hdr.addWidget(refresh_btn)
-        root.addLayout(hdr)
-
-        # ── ZeroTier status card ───────────────────────────────────────────────
-        zt_card = QFrame(); zt_card.setObjectName("HomeZtCard")
-        zt_layout = QHBoxLayout(zt_card); zt_layout.setContentsMargins(20, 16, 20, 16); zt_layout.setSpacing(16)
-        zt_text_col = QVBoxLayout(); zt_text_col.setSpacing(4)
-        zt_title = QLabel("ZeroTier Network"); zt_title.setObjectName("HomeCardTitle")
-        self._home_zt_status = QLabel("Checking…"); self._home_zt_status.setObjectName("HomeZtStatusLabel")
-        zt_text_col.addWidget(zt_title); zt_text_col.addWidget(self._home_zt_status)
-        zt_layout.addLayout(zt_text_col); zt_layout.addStretch()
-        root.addWidget(zt_card)
-
-        # ── Stats row ─────────────────────────────────────────────────────────
-        stats_row = QHBoxLayout(); stats_row.setSpacing(16)
-
-        def make_stat_card(label, attr_name):
-            card = QFrame(); card.setObjectName("HomeStatCard")
-            cl = QVBoxLayout(card); cl.setContentsMargins(20, 18, 20, 18); cl.setSpacing(4)
-            val = QLabel("—"); val.setObjectName("HomeStatValue")
-            lbl = QLabel(label); lbl.setObjectName("HomeStatLabel")
-            cl.addWidget(val); cl.addWidget(lbl)
-            setattr(self, attr_name, val)
-            return card
-
-        stats_row.addWidget(make_stat_card("Saved devices", "_home_stat_devices"))
-        stats_row.addWidget(make_stat_card("Active Cameras", "_home_stat_cameras"))
-        stats_row.addWidget(make_stat_card("Workspaces", "_home_stat_workspaces"))
-        root.addLayout(stats_row)
-
-        # ── Quick actions ─────────────────────────────────────────────────────
-        qa_title = QLabel("Quick Actions"); qa_title.setObjectName("SectionTitle")
-        root.addWidget(qa_title)
-        qa_row = QHBoxLayout(); qa_row.setSpacing(16)
-
-        def make_action_card(title_txt, hint_txt, cb):
-            card = QFrame(); card.setObjectName("HomeActionCard")
-            card.setCursor(Qt.CursorShape.PointingHandCursor)
-            cl = QVBoxLayout(card); cl.setContentsMargins(20, 18, 20, 18); cl.setSpacing(6)
-            t = QLabel(title_txt); t.setObjectName("HomeActionTitle")
-            h = QLabel(hint_txt); h.setObjectName("HomeActionHint"); h.setWordWrap(True)
-            cl.addWidget(t); cl.addWidget(h)
-            btn = QPushButton("Open"); btn.setObjectName("BtnPrimary")
-            btn.setFixedHeight(30); btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(cb); cl.addWidget(btn)
-            return card
-
-        qa_row.addWidget(make_action_card("Cameras", "View and manage live camera streams.", lambda: self.switch(1)))
-        qa_row.addWidget(make_action_card("Devices", "Connect to Jetson devices via ZeroTier.", lambda: self.switch(3)))
-        qa_row.addWidget(make_action_card("Workspaces", "Manage Docker workspaces on Jetson.", lambda: self.switch(2)))
-        root.addLayout(qa_row)
-
-        root.addStretch()
-
-        root.addStretch()
-
-        # Populate stats immediately
-        QTimer.singleShot(200, self.refresh_home_page)
-        return w
-
-    def refresh_home_page(self):
-        """Refresh all stats on the Dashboard page."""
-        # ZeroTier status
-        zt_status = get_zerotier_status()
-        zt_ips = get_zerotier_local_ips()
-        if zt_status == "ONLINE":
-            ip_str = zt_ips[0] if zt_ips else "No IP assigned"
-            status_txt = f"Online — {ip_str}"
-        elif zt_status == "OFFLINE":
-            status_txt = "Offline — ZeroTier not connected"
-        elif zt_status == "NOT INSTALLED":
-            status_txt = "Not installed"
-        else:
-            status_txt = "Unknown"
-        if hasattr(self, "_home_zt_status"):
-            self._home_zt_status.setText(status_txt)
-
-        # Device count
-        try:
-            devices = self.db.get_devices() if hasattr(self, "db") else []
-            dev_count = len(devices)
-        except Exception:
-            dev_count = 0
-        if hasattr(self, "_home_stat_devices"):
-            self._home_stat_devices.setText(str(dev_count))
-
-        # Camera count
-        try:
-            cam_count = len(getattr(self, "active_srcs", {}))
-        except Exception:
-            cam_count = 0
-        if hasattr(self, "_home_stat_cameras"):
-            self._home_stat_cameras.setText(str(cam_count))
-
-        # Workspace count
-        try:
-            ws_count = len(getattr(self, "active_cids", {}))
-        except Exception:
-            ws_count = 0
-        if hasattr(self, "_home_stat_workspaces"):
-            self._home_stat_workspaces.setText(str(ws_count))
-
-        # ── B6: ZT IP suggestion banner ───────────────────────────────────────
-        if hasattr(self, "_home_zt_banner"):
-            try:
-                current_host = (load_app_prefs().get("remote_host_ip") or "").strip()
-                show_banner = False
-                suggested_ip = ""
-                if zt_status == "ONLINE" and not current_host:
-                    peers = get_zerotier_peers()
-                    for p in peers:
-                        addrs = p.get("assignedAddresses") or []
-                        if not isinstance(addrs, list):
-                            addrs = [addrs] if addrs else []
-                        for a in addrs:
-                            ip = str(a).split("/")[0].strip()
-                            if ip:
-                                suggested_ip = ip
-                                show_banner = True
-                                break
-                        if show_banner:
-                            break
-                self._home_zt_banner.setVisible(show_banner)
-                if show_banner and hasattr(self, "_home_zt_banner_ip"):
-                    self._home_zt_banner_ip.setText(suggested_ip)
-                    self._home_zt_set_btn.setProperty("_zt_suggested_ip", suggested_ip)
-            except Exception:
-                self._home_zt_banner.setVisible(False)
-
-    def _apply_zt_banner_ip(self):
-        """Apply the suggested ZT peer IP as the Docker remote host."""
-        ip = ""
-        if hasattr(self, "_home_zt_set_btn"):
-            ip = (self._home_zt_set_btn.property("_zt_suggested_ip") or "").strip()
-        if not ip and hasattr(self, "_home_zt_banner_ip"):
-            ip = (self._home_zt_banner_ip.text() or "").strip()
-        if not ip:
+                cl.addStretch()
+                btn_row = QHBoxLayout()
+                btn_row.setSpacing(8)
+                open_btn = QPushButton("Open")
+                open_btn.setObjectName("BtnSm")
+                target_path = image_path if image_path and os.path.isfile(image_path) else record.get("record_path")
+                open_btn.clicked.connect(lambda _=False, p=target_path: p and QDesktopServices.openUrl(QUrl.fromLocalFile(str(p))))
+                btn_row.addWidget(open_btn)
+                delete_btn = QPushButton("Delete")
+                delete_btn.setObjectName("BtnSecondary")
+                delete_btn.clicked.connect(lambda _=False, iid=record.get("inspection_id"): self._delete_result_record(iid))
+                btn_row.addWidget(delete_btn)
+                cl.addLayout(btn_row)
+                lay.addWidget(card)
             return
-        save_app_prefs_remote_host(ip)
-        if hasattr(self, "node_ip"):
-            self.node_ip.setText(ip)
-        DockerManager.set_host(ip)
-        if hasattr(self, "_home_zt_banner"):
-            self._home_zt_banner.setVisible(False)
-        self.show_toast(f"Remote host set to {ip}")
 
-    # ── ONBOARDING WIZARD ─────────────────────────────────────────────────────
-    def _show_onboarding_wizard(self):
-        """Show first-run onboarding wizard if not completed."""
-        prefs = load_app_prefs()
-        if prefs.get("onboarding_complete"):
-            return
-        # Check if user already has cameras or devices — skip if so
-        try:
-            has_cameras = len(self.db.get_cameras()) > 0
-            has_devices = len(self.db.get_devices()) > 0
-            if has_cameras or has_devices:
-                self._complete_onboarding(silent=True)
-                return
-        except Exception:
-            pass
-        self._onboarding_step = 0
-        self._render_onboarding_step()
-
-    def _render_onboarding_step(self):
-        """Render the current onboarding step as a modal dialog."""
-        from PySide6.QtWidgets import QDialog, QDialogButtonBox
-        step = getattr(self, "_onboarding_step", 0)
-        steps = [
-            {
-                "icon": "",
-                "title": "Welcome to VisionDock",
-                "body": (
-                    "VisionDock lets you manage Jetson cameras and AI workspaces "
-                    "over a secure ZeroTier network.\n\n"
-                    "This quick setup will guide you through:\n"
-                    "  1. Verifying your ZeroTier connection\n"
-                    "  2. Connecting your first Jetson device\n"
-                    "  3. Adding your first camera stream"
-                ),
-                "btn": "Get Started",
-            },
-            {
-                "icon": "",
-                "title": "Step 1 — ZeroTier Network",
-                "body": (
-                    "VisionDock uses ZeroTier to connect your Mac/PC to Jetson devices "
-                    "over any network without port forwarding.\n\n"
-                    "Make sure:\n"
-                    "  • ZeroTier is installed and running on this machine\n"
-                    "  • ZeroTier is installed and running on your Jetson\n"
-                    "  • Both devices are joined to the same Network ID\n"
-                    "  • Both devices are Authorized in ZeroTier Central\n\n"
-                    f"Current status: {get_zerotier_status()}"
-                ),
-                "btn": "Next: Connect Device",
-            },
-            {
-                "icon": "",
-                "title": "Step 2 — Connect Your Jetson",
-                "body": (
-                    "Go to the Devices page to connect your Jetson.\n\n"
-                    "  1. Click 'Devices' in the sidebar\n"
-                    "  2. Find your Jetson in the ZeroTier peer list\n"
-                    "  3. Use 'ZT IP Al' (SSH password once) for the virtual IP, or 'Save & Connect' to stay logged in\n"
-                    "  4. Click 'Remote Host Yap' to set the Docker host to that ZeroTier IP\n\n"
-                    "Your Jetson's ZeroTier virtual IP will be used for Docker and streams."
-                ),
-                "btn": "Next: Add Camera",
-            },
-            {
-                "icon": "",
-                "title": "Step 3 — Add Your First Camera",
-                "body": (
-                    "Go to the Cameras page to add a camera stream.\n\n"
-                    "  1. Click 'Cameras' in the sidebar\n"
-                    "  2. Click '+ Add Camera'\n"
-                    "  3. Enter a name and RTSP/HTTP stream URL\n"
-                    "     Example: rtsp://<ZeroTier-IP>:554/stream\n\n"
-                    "You can also add cameras directly from a connected device "
-                    "on the Devices page."
-                ),
-                "btn": "Finish Setup",
-            },
-        ]
-        if step >= len(steps):
-            self._complete_onboarding()
-            return
-        s = steps[step]
-        dlg = QDialog(self)
-        dlg.setWindowTitle("VisionDock Setup")
-        dlg.setMinimumWidth(480)
-        dlg.setModal(True)
-        vl = QVBoxLayout(dlg); vl.setContentsMargins(32, 28, 32, 24); vl.setSpacing(16)
-        # Title + body
-        title_lbl = QLabel(s["title"]); title_lbl.setObjectName("PageTitle"); title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        body_lbl = QLabel(s["body"]); body_lbl.setWordWrap(True); body_lbl.setObjectName("CaptionMuted")
-        body_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        # Progress indicator
-        prog_lbl = QLabel(f"Step {step} of {len(steps) - 1}" if step > 0 else "")
-        prog_lbl.setObjectName("CaptionMuted"); prog_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        vl.addWidget(title_lbl); vl.addWidget(prog_lbl)
-        vl.addSpacing(8); vl.addWidget(body_lbl); vl.addSpacing(8)
-        # Buttons
-        btn_row = QHBoxLayout()
-        if step > 0:
-            skip_btn = QPushButton("Skip Setup"); skip_btn.setObjectName("ShellBtn")
-            skip_btn.clicked.connect(lambda: (dlg.accept(), self._complete_onboarding()))
-            btn_row.addWidget(skip_btn)
-        btn_row.addStretch()
-        next_btn = QPushButton(s["btn"]); next_btn.setObjectName("BtnPrimary"); next_btn.setFixedHeight(36)
-        def _on_next():
-            dlg.accept()
-            self._onboarding_step += 1
-            if self._onboarding_step >= len(steps):
-                self._complete_onboarding()
-            else:
-                self._render_onboarding_step()
-        next_btn.clicked.connect(_on_next)
-        btn_row.addWidget(next_btn)
-        vl.addLayout(btn_row)
-        dlg.exec()
-
-    def _complete_onboarding(self, silent=False):
-        """Mark onboarding as complete and persist."""
-        try:
-            prefs = load_app_prefs()
-            prefs["onboarding_complete"] = True
-            import json as _json
-            p = _app_prefs_path()
-            os.makedirs(os.path.dirname(p), exist_ok=True)
-            with open(p, "w", encoding="utf-8") as f:
-                _json.dump(prefs, f, indent=2)
-        except Exception as e:
-            log.warning(f"Could not save onboarding state: {e}")
-        if not silent:
-            self.show_toast("Setup complete! You're ready to use VisionDock.")
-
-    def page_cams(self):
-        w = QWidget()
-        l = QVBoxLayout(w)
-        l.setContentsMargins(40, 40, 40, 40)
-        l.setSpacing(0)
-
-        title_block = QVBoxLayout()
-        title_block.setSpacing(6)
-        pt = QLabel("Broadcasts")
-        pt.setObjectName("PageTitle")
-        title_block.addWidget(pt)
-        ps = QLabel("Live preview, detection, snapshot, and record.")
-        ps.setObjectName("PageSubtitle")
-        ps.setWordWrap(True)
-        title_block.addWidget(ps)
-        l.addLayout(title_block)
-        l.addSpacing(14)
-
-        tools = QHBoxLayout()
-        tools.setSpacing(12)
-        self.cam_search = QLineEdit()
-        self.cam_search.setPlaceholderText("Filter by camera name...")
-        self.cam_search.setMinimumWidth(200)
-        self.cam_search.setAccessibleName("Filter camera cards by name")
-        self.cam_search.textChanged.connect(self.filter_cameras)
-        cam_search_shell = SearchFieldShell(self.cam_search)
-        cam_search_shell.setMinimumWidth(260)
-        cam_search_shell.setMaximumWidth(440)
-        tools.addWidget(cam_search_shell, 0)
-        tools.addWidget(make_icon_refresh_button(self.refresh_cameras, "Reload cameras from database"))
-        tools.addStretch(1)
-        l.addLayout(tools)
-        l.addSpacing(10)
-
-        # --- Camera toolbar (RTSP builder + layout save/load) ---
-        cam_toolbar = QHBoxLayout()
-        cam_toolbar.setSpacing(8)
-        _rtsp_btn = QPushButton("Build RTSP URL")
-        _rtsp_btn.setObjectName("BtnSecondary")
-        _rtsp_btn.setFixedHeight(28)
-        _rtsp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        _rtsp_btn.setToolTip("Build an RTSP stream URL from ZeroTier IP, port, and path components")
-        _rtsp_btn.clicked.connect(self._show_rtsp_builder)
-        cam_toolbar.addWidget(_rtsp_btn)
-        cam_toolbar.addStretch(1)
-        _save_layout_btn = QPushButton("Save Layout")
-        _save_layout_btn.setObjectName("BtnSecondary")
-        _save_layout_btn.setFixedHeight(28)
-        _save_layout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        _save_layout_btn.setToolTip("Save current camera card order as 'default' layout")
-        _save_layout_btn.clicked.connect(lambda: self._save_cam_layout())
-        cam_toolbar.addWidget(_save_layout_btn)
-        _load_layout_btn = QPushButton("Load Layout")
-        _load_layout_btn.setObjectName("BtnSecondary")
-        _load_layout_btn.setFixedHeight(28)
-        _load_layout_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        _load_layout_btn.setToolTip("Restore camera card order from saved 'default' layout")
-        _load_layout_btn.clicked.connect(lambda: self._load_cam_layout())
-        cam_toolbar.addWidget(_load_layout_btn)
-        l.addLayout(cam_toolbar)
-        l.addSpacing(8)
-        sa = QScrollArea()
-        sa.setWidgetResizable(True)
-        sa.setStyleSheet("background: transparent; border: none;")
-        self.cam_widget = QWidget()
-        self.cf = FlowLayout(self.cam_widget)
-        sa.setWidget(self.cam_widget)
-        self.abc = self.create_add_btn(
-            "New camera",
-            self.modal_cam,
-            "USB, CSI, RTSP, or file source.",
-        )
-        self.cf.addWidget(self.abc)
-        polish_scroll_area(sa)
-        l.addWidget(sa, 1)
-        return w
-
-    def page_docker(self):
-        w = QWidget()
-        l = QVBoxLayout(w)
-        l.setContentsMargins(40, 40, 40, 40)
-        l.setSpacing(0)
-
-        title_block = QVBoxLayout()
-        title_block.setSpacing(6)
-        pt = QLabel("Workspaces")
-        pt.setObjectName("PageTitle")
-        title_block.addWidget(pt)
-        ps = QLabel("Containers for AI and custom scripts.")
-        ps.setObjectName("PageSubtitle")
-        ps.setWordWrap(True)
-        title_block.addWidget(ps)
-        l.addLayout(title_block)
-        l.addSpacing(14)
-
-        tools = QHBoxLayout()
-        tools.setSpacing(12)
-        self.doc_search = QLineEdit()
-        self.doc_search.setPlaceholderText("Filter by workspace name...")
-        self.doc_search.setMinimumWidth(200)
-        self.doc_search.setAccessibleName("Filter workspace cards by name")
-        self.doc_search.textChanged.connect(self.filter_workspaces)
-        doc_search_shell = SearchFieldShell(self.doc_search)
-        doc_search_shell.setMinimumWidth(260)
-        doc_search_shell.setMaximumWidth(440)
-        tools.addWidget(doc_search_shell, 0)
-        tools.addWidget(make_icon_refresh_button(self.refresh_ui, "Reload workspaces"))
-        tools.addStretch(1)
-        l.addLayout(tools)
-        l.addSpacing(20)
-
-        sa = QScrollArea()
-        sa.setWidgetResizable(True)
-        sa.setStyleSheet("background: transparent; border: none;")
-        self.doc_widget = QWidget()
-        self.df = FlowLayout(self.doc_widget)
-        sa.setWidget(self.doc_widget)
-        self.abd = self.create_add_btn(
-            "New workspace",
-            self.modal_doc,
-            "Image template or folder mount.",
-        )
-        self.df.addWidget(self.abd)
-        polish_scroll_area(sa)
-        l.addWidget(sa, 1)
-        return w
-
-    def page_devices(self):
-        w = QWidget()
-        l = QVBoxLayout(w)
-        l.setContentsMargins(40, 40, 40, 40)
-        l.setSpacing(0)
-        tb = QVBoxLayout()
-        tb.setSpacing(6)
-        pt = QLabel("Devices")
-        pt.setObjectName("PageTitle")
-        tb.addWidget(pt)
-        ds = QLabel(
-            "VisionDock’a katıldığınız ZeroTier ağının sanal IP aralığına (Ayarlar’daki ağ ataması ile aynı) göre cihazlar listelenir. "
-            "Ham düğüm path ve relay adresleri yalnızca Ayarlar > ZeroTier bölümündedir. SSH şifresi oturum içindir."
-        )
-        ds.setObjectName("PageSubtitle")
-        ds.setWordWrap(True)
-        tb.addWidget(ds)
-        l.addLayout(tb)
-        l.addSpacing(10)
-        h = QHBoxLayout()
-        h.addStretch()
-        h.addWidget(make_icon_refresh_button(self.refresh_devices_page, "Refresh device list"))
-        l.addLayout(h)
-        l.addSpacing(16)
-        sa = QScrollArea()
-        sa.setWidgetResizable(True)
-        sa.setStyleSheet("background: transparent; border: none;")
-        dev_content = QWidget()
-        dev_layout = QVBoxLayout(dev_content)
-        dev_layout.setSpacing(16)
-        dev_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        card = QFrame()
-        card.setObjectName("InfoCard")
-        card_l = QVBoxLayout(card)
-        card_l.setContentsMargins(22, 20, 22, 22)
-        card_l.setSpacing(12)
-        hdr = QHBoxLayout()
-        sh = QLabel("Cihazlar")
-        sh.setObjectName("SectionHeading")
-        hdr.addWidget(sh)
-        hdr.addStretch()
-        add_dev_btn = QPushButton("Cihaz ekle")
-        add_dev_btn.setObjectName("ShellBtn")
-        add_dev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        add_dev_btn.clicked.connect(lambda: self._modal_add_device(None))
-        hdr.addWidget(add_dev_btn)
-        card_l.addLayout(hdr)
-        self.dev_unified_host = QWidget()
-        self.dev_unified_layout = QVBoxLayout(self.dev_unified_host)
-        self.dev_unified_layout.setContentsMargins(0, 0, 0, 0)
-        self.dev_unified_layout.setSpacing(10)
-        card_l.addWidget(self.dev_unified_host)
-        dev_layout.addWidget(card)
-        ssh_trust = QLabel(
-            "Şifreler kaydedilmez. Tam düğüm listesi Ayarlar sekmesindedir; bu tablo yalnızca aynı sanal ağ adreslerine uyan uçları gösterir. "
-            "Eksik sanal IP için ⋯ veya Ayarlar’dan «ZT IP Al» kullanın."
-        )
-        ssh_trust.setObjectName("CaptionMuted")
-        ssh_trust.setWordWrap(True)
-        dev_layout.addWidget(ssh_trust)
-        dev_layout.addStretch()
-        sa.setWidget(dev_content)
-        polish_scroll_area(sa)
-        l.addWidget(sa)
-        QTimer.singleShot(200, self.refresh_devices_page)
-        self._zt_peer_refresh_timer = QTimer(w)
-        self._zt_peer_refresh_timer.setInterval(30000)
-        self._zt_peer_refresh_timer.timeout.connect(self.refresh_devices_page)
-        self._zt_peer_refresh_timer.start()
-        return w
-
-    def _match_zt_peer_for_saved(self, name, host, leaf_peers):
-        """Kayıtlı cihaz satırını listpeers kaydıyla eşleştir (path, kontrolör ZT IP, önbellek veya ZT- adı)."""
-        h = (host or "").strip()
-        for pr in leaf_peers:
-            if (pr.get("ip") or "").strip() == h:
-                return pr
-            pals = pr.get("path_ips") or []
-            if h in pals:
-                return pr
-            for z in pr.get("zt_from_controller") or []:
-                if z == h:
-                    return pr
-            ck = self._zt_peer_cache_key(
-                pr.get("address_full") or pr.get("address") or "",
-                (pr.get("ip") or "").strip(),
-            )
-            if h in (self._zt_peer_cached_ips.get(ck) or []):
-                return pr
-        n = (name or "").strip()
-        if n.upper().startswith("ZT-"):
-            suf = n[3:].strip().lower()
-            for pr in leaf_peers:
-                addrf = (pr.get("address_full") or pr.get("address") or "").strip().lower()
-                if addrf and (addrf.startswith(suf) or suf.startswith(addrf[: min(len(suf), len(addrf))])):
-                    return pr
+        final_obj = QLabel("No inspection results yet. Trigger the runtime from the Inspection page or run a hardware trigger.")
+        final_obj.setObjectName("CaptionMuted")
+        lay.addWidget(final_obj)
         return None
 
     def _pick_canonical_device_row(self, rows: list, prefixes: list) -> tuple:
@@ -4498,23 +5054,18 @@ class App(QMainWindow):
             "csi_gst_http",
         )
         stream_mode_combo.addItem(
-            "USB / UVC — FFmpeg + V4L2 YUYV → HTTP :5000 (CSI’da sık başarısız)",
-            "usb_ffmpeg_http",
-        )
-        stream_mode_combo.addItem(
-            "Uzak başlatma yok — yalnızca aşağıdaki URL (sunucu hazır)",
+            "Manual / advanced URL — yalnızca hazır sunucu varsa",
             "manual_url",
         )
         stream_mode_combo.setCurrentIndex(0)
         stream_mode_combo.setToolTip(
-            "CSI yolu: libcamera/v4l2 RG10 (Ham Bayer) akışı için NVIDIA Argus kullanır; VisionDock’taki klasik "
-            "YUYV+FFmpeg satırı bu donanımda güvenilir değildir. USB web kamerası için FFmpeg seçeneğini kullanın."
+            "Üretim hattı için önerilen yol Jetson CSI + NVIDIA Argus + GStreamer akışıdır. "
+            "Manual URL seçeneği yalnızca önceden kurulmuş gelişmiş akışlar içindir."
         )
         dlg_l.addWidget(stream_mode_combo)
         warn = QLabel(
             "<b>Connection refused</b>: 5000’de HTTP dinleyen yok (uzak komut çıkmış veya yanlış profil).<br>"
-            "CSI sensörlerinde çoğunlukla yalnızca üstteki <b>NVArgus / GStreamer</b> profili mantıklıdır; "
-            "YUYV+FFmpeg USB içindir.<br>"
+            "Üretim hattında yalnızca üstteki <b>NVArgus / GStreamer</b> profili önerilir.<br>"
             "Kamera meşgul: <code>fuser -v /dev/video0</code> · Log: <code>tail /tmp/visiondock-stream.log</code>"
         )
         warn.setObjectName("CaptionMuted")
@@ -4549,15 +5100,10 @@ class App(QMainWindow):
             else:
                 url_edit.setText(f"http://{sip}:5000/" if sip else "")
                 url_edit.setReadOnly(True)
-                if stream_mode_combo.currentData() == "csi_gst_http":
-                    url_edit.setToolTip(
-                        "Jetson’da GStreamer multipart MJPEG gönderir (tcpserversink :5000). "
-                        "Adres http://… yazsa da VisionDock aynı portta TCP fallback dener."
-                    )
-                else:
-                    url_edit.setToolTip(
-                        "FFmpeg V4L2 YUYV Jetson’da :5000 açar; CSI kameralarda genelde uyumsuzdur."
-                    )
+                url_edit.setToolTip(
+                    "Jetson’da GStreamer multipart MJPEG gönderir (tcpserversink :5000). "
+                    "Adres http://… yazsa da VisionDock aynı portta TCP fallback dener."
+                )
 
         name_edit = QLineEdit(f"{dev_name} / {cam_idx_from_line(current_line())}")
         name_edit.setPlaceholderText("Yayın adı")
@@ -4593,42 +5139,26 @@ class App(QMainWindow):
         line = current_line()
         cam_idx = cam_idx_from_line(line)
         mode = stream_mode_combo.currentData()
-        if mode in ("csi_gst_http", "usb_ffmpeg_http"):
-            dev_m = re.search(r"/dev/video\d+", line or "")
-            dev_p = dev_m.group(0) if dev_m else f"/dev/video{cam_idx}"
+        if mode == "csi_gst_http":
             _http_port = 5000
             try:
                 sens_id = min(max(int(cam_idx or "0"), 0), 7)
             except ValueError:
                 sens_id = 0
-            if mode == "csi_gst_http":
-                # caps içindeki () bash -lc'de özel anlam taşır — tek tırnak zorunlu.
-                # souphttpserversink çoğu Jetson imajında yok; tcpserversink + multipart ile
-                # open_cv_capture_remote http://… için TCP fallback uyumludur.
-                inner = (
-                    f"(command -v fuser >/dev/null 2>&1 && fuser -k {_http_port}/tcp 2>/dev/null); sleep 0.45; "
-                    "if ! command -v gst-launch-1.0 >/dev/null 2>&1; then echo NO_GST_LAUNCH; exit 1; fi; "
-                    f"gst-launch-1.0 -e nvarguscamerasrc sensor-id={sens_id} ! "
-                    "'video/x-raw(memory:NVMM),width=1280,height=720,format=NV12,framerate=60/1' ! "
-                    "nvjpegenc quality=75 idct-method=1 ! "
-                    "queue max-size-buffers=2 max-size-time=0 leaky=downstream ! "
-                    "multipartmux ! "
-                    f"tcpserversink host=0.0.0.0 port={_http_port} sync=false blocksize=65536"
-                )
-                remote_label = "Uzak GStreamer"
-            else:
-                # USB / UVC: klasik YUYV + FFmpeg; CSI RG10 sensörde güvenilir değildir — UI’da açıklandı
-                inner = (
-                    f"(command -v fuser >/dev/null 2>&1 && fuser -k {_http_port}/tcp 2>/dev/null); sleep 0.4; "
-                    f"(command -v v4l2-ctl >/dev/null 2>&1 && "
-                    f"v4l2-ctl -d {shlex.quote(dev_p)} "
-                    f"--set-fmt-video=width=1280,height=720,pixelformat=YUYV 2>/dev/null); sleep 0.2; "
-                    f"ffmpeg -loglevel warning -hide_banner -y -f v4l2 -thread_queue_size 4096 "
-                    f"-input_format yuyv422 -video_size 1280x720 -framerate 20 "
-                    f"-i {shlex.quote(dev_p)} -c:v mjpeg -q:v 5 "
-                    f"-f mpjpeg -listen 1 -timeout 0 http://0.0.0.0:{_http_port}/"
-                )
-                remote_label = "Uzak FFmpeg"
+            # caps içindeki () bash -lc'de özel anlam taşır — tek tırnak zorunlu.
+            # souphttpserversink çoğu Jetson imajında yok; tcpserversink + multipart ile
+            # open_cv_capture_remote http://… için TCP fallback uyumludur.
+            inner = (
+                f"(command -v fuser >/dev/null 2>&1 && fuser -k {_http_port}/tcp 2>/dev/null); sleep 0.45; "
+                "if ! command -v gst-launch-1.0 >/dev/null 2>&1; then echo NO_GST_LAUNCH; exit 1; fi; "
+                f"gst-launch-1.0 -e nvarguscamerasrc sensor-id={sens_id} ! "
+                "'video/x-raw(memory:NVMM),width=1280,height=720,format=NV12,framerate=60/1' ! "
+                "nvjpegenc quality=75 idct-method=1 ! "
+                "queue max-size-buffers=2 max-size-time=0 leaky=downstream ! "
+                "multipartmux ! "
+                f"tcpserversink host=0.0.0.0 port={_http_port} sync=false blocksize=65536"
+            )
+            remote_label = "Uzak GStreamer"
             ok_run, detail = self._ssh_run_remote_stream_command(ssh_host, ssh_user, inner)
             sess = self._ssh_sessions.get(ssh_session_key(ssh_host, ssh_user))
             listening = bool(sess and self._ssh_verify_tcp_listen(sess, _http_port)) if ok_run else False
@@ -4651,23 +5181,14 @@ class App(QMainWindow):
                         "unexpected token",
                     )
                 )
-                if mode == "csi_gst_http":
-                    jetson_checks = (
-                        "Jetson’da kontrol (NVArgus / GStreamer):\n"
-                        "• tail -40 /tmp/visiondock-stream.log\n"
-                        "• ss -lntp | grep :5000 (LISTEN görünmeli)\n"
-                        "• gst-inspect-1.0 tcpserversink multipartmux nvjpegenc nvarguscamerasrc\n"
-                        "• Log’da «syntax error» veya «unexpected token»: caps tırnağı eksik (uygulama güncel mi)\n"
-                        "• CSI’da YUYV+FFmpeg profili çoğu donanımda 5000 açmaz — CSI profilinde kalın"
-                    )
-                else:
-                    jetson_checks = (
-                        "Jetson’da kontrol (FFmpeg / V4L2):\n"
-                        "• tail -40 /tmp/visiondock-stream.log\n"
-                        "• Kamera meşgul: sudo fuser -v " + dev_p + "\n"
-                        "• v4l2-ctl -d " + dev_p + " --list-formats-ext\n"
-                        "• Çıktı RG10 / Ham Bayer ise USB profili genelde işe yaramaz — CSI profiline geçin"
-                    )
+                jetson_checks = (
+                    "Jetson’da kontrol (NVArgus / GStreamer):\n"
+                    "• tail -40 /tmp/visiondock-stream.log\n"
+                    "• ss -lntp | grep :5000 (LISTEN görünmeli)\n"
+                    "• gst-inspect-1.0 tcpserversink multipartmux nvjpegenc nvarguscamerasrc\n"
+                    "• Log’da «syntax error» veya «unexpected token»: caps tırnağı eksik (uygulama güncel mi)\n"
+                    "• Üretim için yalnızca CSI / NVArgus profilini kullanın"
+                )
                 if listening:
                     self.show_toast(
                         "Jetson’da :5000 dinleniyor (MJPEG); birkaç saniye içinde önizleme denenecek."
@@ -4720,498 +5241,135 @@ class App(QMainWindow):
             self._ssh_disconnect_device(path_ip, fu)
             self._ssh_sessions[ssh_session_key(path_ip, fu)] = client
             u = fu
-            self.refresh_devices_page()
+            self.refresh_devices_page(force=True)
         zt_list = self._zt_peer_cached_ips.get(self._zt_peer_cache_key(node_addr, path_ip)) or []
         sip = zt_list[0] if zt_list else stream_guess
         label = f"ZT-{node_addr[:8]}" if node_addr and node_addr != "—" else path_ip
         self._show_yayina_ekle_camera_dialog(path_ip, u, label, sip)
 
-    def refresh_devices_page(self):
-        default_ssh_user = os.getenv("ZEROTIER_SSH_USER", "jetson")
-        lay = self.dev_unified_layout
-        while lay.count():
-            item = lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        peers = get_zerotier_peers()
-        leaf_peers = [p for p in peers if p.get("role") == "LEAF"]
-        my_nid = get_zerotier_local_node_id()
-        if my_nid:
-            leaf_peers = [
-                p
-                for p in leaf_peers
-                if (p.get("address_full") or p.get("address") or "").strip().lower() != my_nid
-            ]
-        n_deduped = self._dedupe_devices_by_zt_node(leaf_peers)
-        if n_deduped:
-            self.show_toast(f"{n_deduped} yinelenen cihaz kaydı ZT düğümüne göre birleştirildi.")
-        devices_list = self.db.get_devices()
-        zt_local = set(get_zerotier_local_ips())
-        zt_prefs = get_zerotier_managed_ipv4_prefixes()
-        leaf_peers_devices = [p for p in leaf_peers if self._peer_visible_on_devices_page(p, zt_prefs)]
-        banner = QLabel(
-            "Bu sayfa, Ayarlar’daki VisionDock ağı ile aynı sanal IP önekine sahip uçları ve kayıtlı cihazları gösterir. "
-            "Tüm LEAF düğümler ve ham path adresleri yalnızca Ayarlar > ZeroTier listesindedir."
-        )
-        banner.setObjectName("CaptionMuted")
-        banner.setWordWrap(True)
-        lay.addWidget(banner)
-        head = QWidget()
-        hh = QHBoxLayout(head)
-        hh.setContentsMargins(4, 0, 4, 6)
-        for txt, mw in [
-            ("Cihaz", 120),
-            ("Ağ IP", 140),
-            ("SSH", 72),
-            ("Durum", 70),
-        ]:
-            lb = QLabel(txt)
-            lb.setObjectName("CaptionMutedSm")
-            lb.setMinimumWidth(mw)
-            hh.addWidget(lb)
-        lb_act = QLabel("Eylemler")
-        lb_act.setObjectName("CaptionMutedSm")
-        hh.addWidget(lb_act, 1)
-        lay.addWidget(head)
-        matched_node_addrs = set()
-        for name, host, user, key_path in devices_list:
-            if (host or "").strip() in zt_local:
-                continue
-            pr = self._match_zt_peer_for_saved(name, host, leaf_peers)
-            if pr:
-                aid = (pr.get("address_full") or pr.get("address") or "").strip().lower()
-                if aid:
-                    matched_node_addrs.add(aid)
-            u = user or default_ssh_user
-            if self._is_ssh_device_connected(host, u):
-                rid = self._ensure_remote_zt_node_id(host, u)
-                if rid:
-                    matched_node_addrs.add(rid.lower())
-
-        def add_device_row(row_cols, actions_layout):
-            row = surface_row()
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(8, 8, 8, 8)
-            rl.setSpacing(10)
-            for w in row_cols:
-                rl.addWidget(w, 0)
-            rl.addLayout(actions_layout, 1)
-            lay.addWidget(row)
-
-        rows_placed = 0
-        for name, host, user, key_path in devices_list:
-            if (host or "").strip() in zt_local:
-                continue
-            u = user or default_ssh_user
-            pr = self._match_zt_peer_for_saved(name, host, leaf_peers)
-            path_ip = (pr.get("ip") or "").strip() if pr else ""
-            node_disp = (pr.get("address") or "—") if pr else "—"
-            node_id_full = ((pr.get("address_full") or pr.get("address") or "").strip() if pr else "")
-            ssh_key = ssh_session_key(host, u)
-            connected = self._is_ssh_device_connected(host, u)
-            ssh_client = self._ssh_sessions.get(ssh_key)
-            zt_live = ssh_get_zerotier_ips(ssh_client) if (connected and ssh_client) else []
-            zt_ctrl = (pr.get("zt_from_controller") or []) if pr else []
-            ck = (
-                self._zt_peer_cache_key(node_id_full or node_disp, path_ip)
-                if pr and path_ip
-                else self._zt_peer_cache_key("", host)
-            )
-            zt_cached = self._zt_peer_cached_ips.get(ck) or []
-            zt_bits = []
-            zt_bits.extend(zt_ctrl or [])
-            zt_bits.extend(zt_cached or [])
-            zt_bits.extend(zt_live or [])
-            seen_z = []
-            for z in zt_bits:
-                if z and z not in seen_z:
-                    seen_z.append(z)
-            seen_z = _sort_zt_ips_display_order(seen_z, zt_prefs)
-            zt_cell = " ".join(seen_z) if seen_z else "—"
-            display_host = self._devices_page_managed_display_ip(host, seen_z, path_ip, zt_prefs)
-            relay_saved = (
-                self._peer_ssh_relay_ip(pr, display_host, zt_prefs)
-                if pr
-                else (host or path_ip or "").strip()
-            )
-            hst = (host or "").strip()
-            if not ip_matches_zt_managed_prefixes(display_host, zt_prefs) and not ip_matches_zt_managed_prefixes(
-                hst, zt_prefs
-            ):
-                continue
-            c_src = QLabel(name or "—")
-            c_src.setObjectName("ListPrimary")
-            c_src.setMinimumWidth(120)
-            c_path = QLabel(display_host or "—")
-            c_path.setObjectName("MonoMuted")
-            c_path.setMinimumWidth(140)
-            c_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            tip_p = []
-            if node_id_full:
-                tip_p.append(f"Node: {node_id_full}")
-            if seen_z:
-                tip_p.append(f"Sanal IP: {' '.join(seen_z)}")
-            if relay_saved and relay_saved != display_host:
-                tip_p.append(f"SSH path: {relay_saved}")
-            elif zt_cell != "—" and not seen_z:
-                tip_p.append(f"Sanal IP: {zt_cell}")
-            c_path.setToolTip("\n".join(tip_p) if tip_p else "VisionDock ağı sanal IP (Ayarlar’daki önek ile aynı)")
-            c_user = QLabel(u)
-            c_user.setMinimumWidth(72)
-            st = QLabel("Bağlı" if connected else "Kapalı")
-            st.setObjectName("DeviceConnectedBadge" if connected else "DeviceOfflineBadge")
-            st.setMinimumWidth(70)
-            btns = QHBoxLayout()
-            btns.setSpacing(6)
-            if connected:
-                dcb = QPushButton("Kes")
-                dcb.setObjectName("BtnSecondary")
-                dcb.setFixedHeight(28)
-                dcb.clicked.connect(
-                    lambda _, h=host, us=u: (self._ssh_disconnect_device(h, us), self.refresh_devices_page())
-                )
-                btns.addWidget(dcb)
-            else:
-                cob = QPushButton("Bağlan")
-                cob.setObjectName("BtnPrimary")
-                cob.setFixedHeight(28)
-                cob.clicked.connect(lambda _, h=host, us=u: self._ssh_show_connect_dialog(h, us))
-                btns.addWidget(cob)
-            stream_ip = seen_z[0] if seen_z else host
-            yb = QPushButton("Yayına Ekle")
-            yb.setObjectName("BtnPrimary")
-            yb.setFixedHeight(28)
-            yb.setEnabled(connected)
-            yb.clicked.connect(
-                lambda _=False, h=host, us=u, nm=name or "Device", sp=stream_ip: self._show_yayina_ekle_camera_dialog(
-                    h, us, nm, sp
-                )
-            )
-            btns.addWidget(yb)
-            ztip_target = relay_saved or host
-            more = QToolButton()
-            more.setText("⋯")
-            more.setObjectName("BtnSecondary")
-            more.setFixedSize(30, 28)
-            more.setArrowType(Qt.ArrowType.NoArrow)
-            more.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            more.setStyleSheet(QTOOLBTN_HIDE_MENU_ARROW)
-            more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-            m = QMenu(self)
-            _nid = node_id_full if node_id_full else (node_disp if node_disp != "—" else "")
-            _zt = ztip_target
-            _ur = u
-            m.addAction("ZT sanal IP al…").triggered.connect(
-                lambda _zt=_zt, _ur=_ur, _nid=_nid: self._fetch_peer_zt_virtual_ips(_zt, _ur, _nid)
-            )
-            act_dh = m.addAction("Docker host (ZT)…")
-            act_dh.setEnabled(bool(seen_z))
-            _z0 = seen_z[0] if seen_z else ""
-            act_dh.triggered.connect(lambda _z=_z0: self._use_zt_virtual_ip_as_remote(_z))
-
-            def _copy_saved():
-                cmd = (
-                    f"ssh -i {key_path} {u}@{host}"
-                    if (key_path and os.path.exists(os.path.expanduser(key_path)))
-                    else f"ssh {u}@{host}"
-                )
-                QApplication.clipboard().setText(cmd)
-                self.show_toast("SSH kopyalandı")
-
-            m.addSeparator()
-            m.addAction("SSH kopyala").triggered.connect(_copy_saved)
-            m.addAction("Terminal aç").triggered.connect(
-                lambda: (open_ssh_in_terminal(u, host, key_path), self.show_toast("Terminal"))
-            )
-            m.addSeparator()
-            m.addAction("Düzenle").triggered.connect(
-                lambda: self._modal_add_device((name, host, u or "", key_path or ""))
-            )
-
-            def _dodel():
-                self._ssh_disconnect_device(host, u)
-                self.db.remove_device(host)
-                self.refresh_devices_page()
-                self.show_toast("Cihaz silindi")
-
-            m.addAction("Sil").triggered.connect(_dodel)
-            more.setMenu(m)
-            btns.addWidget(more)
-            add_device_row([c_src, c_path, c_user, st], btns)
-            rows_placed += 1
-
-        for pr in leaf_peers_devices:
-            node_short = pr.get("address") or "—"
-            node_full = (pr.get("address_full") or pr.get("address") or "").strip()
-            if node_full.lower() in matched_node_addrs:
-                continue
-            ip = (pr.get("ip") or "").strip()
-            zt_ctrl = pr.get("zt_from_controller") or []
-            ck = self._zt_peer_cache_key(node_full or node_short, ip)
-            zt_cached = self._zt_peer_cached_ips.get(ck) or []
-            seen = []
-            for z in list(zt_ctrl) + list(zt_cached):
-                if z and z not in seen:
-                    seen.append(z)
-            seen = _sort_zt_ips_display_order(seen, zt_prefs)
-            display_ip = self._devices_page_managed_display_ip("", seen, ip, zt_prefs)
-            ssh_use = self._peer_ssh_relay_ip(pr, display_ip, zt_prefs) or display_ip or ip
-            c_src = QLabel(f"Düğüm · {node_short}")
-            c_src.setObjectName("CaptionMutedSm")
-            c_src.setMinimumWidth(120)
-            c_src.setToolTip("Kayıtlı değil — «Kaydet & Bağlan» ile listeye ekleyin.")
-            c_path = QLabel(display_ip or "—")
-            c_path.setObjectName("MonoIp")
-            c_path.setMinimumWidth(140)
-            c_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            t_lines = [f"Node: {node_full}"]
-            if seen:
-                t_lines.append(f"ZT: {' '.join(seen)}")
-            if ssh_use and ssh_use != display_ip:
-                t_lines.append(f"SSH path: {ssh_use}")
-            c_path.setToolTip("\n".join(t_lines))
-            user_edit = QLineEdit()
-            user_edit.setPlaceholderText(default_ssh_user)
-            user_edit.setMaximumWidth(88)
-            user_edit.setFixedHeight(26)
-            st = QLabel("Kayıtsız")
-            st.setObjectName("CaptionMuted")
-            st.setMinimumWidth(70)
-            btns = QHBoxLayout()
-            btns.setSpacing(6)
-
-            def _copy_zt(su=ssh_use, ue=user_edit, d_u=default_ssh_user):
-                usr = ue.text().strip() or d_u
-                if su:
-                    QApplication.clipboard().setText(f"ssh {usr}@{su}")
-                    self.show_toast("SSH kopyalandı")
-
-            def _term_zt(su=ssh_use, ue=user_edit, d_u=default_ssh_user):
-                usr = ue.text().strip() or d_u
-                if su:
-                    open_ssh_in_terminal(usr, su)
-                    self.show_toast("Terminal")
-
-            def _save_conn(
-                su=ssh_use,
-                di=display_ip,
-                sn=seen,
-                ipx=ip,
-                nf=node_full,
-                ue=user_edit,
-                d_u=default_ssh_user,
-            ):
-                if not su and not sn:
-                    self.show_toast("Bağlantı adresi yok")
-                    return
-                usr = ue.text().strip() or d_u
-                save_host = (di or (sn[0] if sn else "") or ipx).strip()
-                if not save_host:
-                    save_host = (su or "").strip()
-                if not save_host:
-                    self.show_toast("Kaydedilecek IP yok")
-                    return
-                if nf and nf not in ("—", ""):
-                    dev_name = f"ZT-{nf[:8]}"
-                else:
-                    dev_name = f"ZT-{save_host.replace('.', '-')}"
-                existing = [
-                    d
-                    for d in self.db.get_devices()
-                    if d[1] == save_host or (ipx and d[1] == ipx) or (su and d[1] == su)
-                ]
-                if not existing:
-                    self.db.save_device(dev_name, save_host, usr)
-                    self.show_toast(f"Eklendi: {dev_name}")
-                else:
-                    self.show_toast(f"Kayıtlı: {existing[0][0]}")
-                self._ssh_show_connect_dialog(save_host, usr, node_id=nf)
-
-            save_conn_btn = QPushButton("Kaydet & Bağlan")
-            save_conn_btn.setObjectName("BtnPrimary")
-            save_conn_btn.setFixedHeight(28)
-            save_conn_btn.setEnabled(bool(ssh_use or seen))
-            save_conn_btn.clicked.connect(_save_conn)
-            btns.addWidget(save_conn_btn)
-            sg = display_ip or (seen[0] if seen else ip)
-            ypb = QPushButton("Yayına Ekle")
-            ypb.setObjectName("BtnPrimary")
-            ypb.setFixedHeight(28)
-            ypb.setEnabled(bool(ssh_use))
-            ypb.clicked.connect(
-                lambda _=False, su=ssh_use, ue=user_edit, nf=node_full, sgx=sg: self._peer_row_yayina_ekle(
-                    su, ue, nf, sgx
-                )
-            )
-            btns.addWidget(ypb)
-            more_p = QToolButton()
-            more_p.setText("⋯")
-            more_p.setObjectName("BtnSecondary")
-            more_p.setFixedSize(30, 28)
-            more_p.setArrowType(Qt.ArrowType.NoArrow)
-            more_p.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            more_p.setStyleSheet(QTOOLBTN_HIDE_MENU_ARROW)
-            more_p.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-            mp = QMenu(self)
-            mp.addAction("ZT sanal IP al…").triggered.connect(
-                lambda su=ssh_use, ue=user_edit, d_u=default_ssh_user, nf=node_full: self._fetch_peer_zt_virtual_ips(
-                    su, ue.text().strip() or d_u, nf
-                )
-            )
-            mp.addAction("SSH kopyala").triggered.connect(_copy_zt)
-            mp.addAction("Terminal aç").triggered.connect(_term_zt)
-            if seen:
-                mp.addSeparator()
-                zt0 = seen[0] if seen else ""
-                mp.addAction("Docker host (ZT)…").triggered.connect(
-                    lambda z=zt0: self._use_zt_virtual_ip_as_remote(z)
-                )
-            more_p.setMenu(mp)
-            btns.addWidget(more_p)
-            add_device_row([c_src, c_path, user_edit, st], btns)
-            rows_placed += 1
-
-        if rows_placed == 0:
-            ef = QFrame()
-            ef.setObjectName("SurfaceRow")
-            ev = QVBoxLayout(ef)
-            et = QLabel("Bu ağın sanal adres aralığında listelenecek uç veya kayıtlı cihaz yok.")
-            et.setObjectName("EmptyStateTitle")
-            et.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            es = QLabel(
-                "«Cihaz ekle» ile kaydedin veya Ayarlar > ZeroTier’dan düğümlere «ZT IP Al» ile "
-                "sanal IP alındıktan sonra burada görünürler. Ham path listesi yalnızca Ayarlar’dadır.\n\n"
-                "Yalnızca yönetilen sanal IP’si bu öneğe uyan (ör. 192.168.192.x) kayıtlar gösterilir; "
-                "eski path-only kayıtları burada gizlenir, veritabanından silebilir veya birleştirebilirsiniz."
-            )
-            es.setObjectName("EmptyStateSubtitle")
-            es.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            es.setWordWrap(True)
-            ev.addWidget(et)
-            ev.addWidget(es)
-            lay.addWidget(ef)
-
-    def _modal_add_device(self, existing=None):
-        if existing is not None and (not isinstance(existing, (tuple, list)) or len(existing) != 4):
-            existing = None
-        ov = QWidget(self); ov.setObjectName("Overlay"); ov.setGeometry(0, 0, self.width(), self.height())
-        sl = QVBoxLayout(ov); sl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        box = QFrame(); box.setObjectName("ModalBox"); box.setFixedWidth(420); bl = QVBoxLayout(box); bl.setSpacing(16)
-        is_edit = existing is not None
-        title = "Edit device" if is_edit else "Add device"
-        bl.addWidget(QLabel(title, styleSheet="font-size:18px; font-weight:800; border:none;"))
-        name_in = QLineEdit(); name_in.setPlaceholderText("Name (e.g. Jetson-Cam)"); bl.addWidget(name_in)
-        host_in = QLineEdit(); host_in.setPlaceholderText("Host / IP"); bl.addWidget(host_in)
-        user_in = QLineEdit(); user_in.setPlaceholderText("SSH user (default: jetson)"); user_in.setText("jetson"); bl.addWidget(user_in)
-        key_in = QLineEdit(); key_in.setPlaceholderText("SSH private key path (optional, e.g. ~/.ssh/visiondock_zt)"); bl.addWidget(key_in)
-        if is_edit:
-            name_in.setText(existing[0] or ""); host_in.setText(existing[1] or ""); user_in.setText(existing[2] or "jetson"); key_in.setText(existing[3] or "")
-        def save_dev():
-            host = host_in.text().strip()
-            if not host: QMessageBox.warning(self, "Device", "Enter a host."); return
-            if is_edit:
-                old_host = existing[1]
-                self.db.update_device(old_host, name_in.text().strip(), host, user_in.text().strip() or "jetson", key_in.text().strip() or None)
-                self.refresh_devices_page(); ov.deleteLater(); self.show_toast("Device updated")
-            else:
-                self.db.save_device(name_in.text().strip(), host, user_in.text().strip() or "jetson", key_in.text().strip() or None)
-                self.refresh_devices_page(); ov.deleteLater(); self.show_toast("Device added")
-        btn_hl = QHBoxLayout()
-        can_btn = QPushButton("Cancel"); can_btn.setObjectName("BtnSecondary"); can_btn.clicked.connect(ov.deleteLater); btn_hl.addWidget(can_btn)
-        btn_hl.addStretch()
-        btn = QPushButton("Save"); btn.setObjectName("BtnPrimary"); btn.clicked.connect(save_dev); btn_hl.addWidget(btn)
-        bl.addLayout(btn_hl)
-        sl.addWidget(box)
-        overlay_style = "background: rgba(0,0,0,0.6);" if getattr(self, "is_dark", True) else "background: rgba(255,255,255,0.5);"
-        ov.setStyleSheet(f"QWidget#Overlay {{ {overlay_style} }}")
-        ov.raise_(); ov.show()
-
-    def _run_ssh_keygen(self):
-        if getattr(self, "_production_mode", False):
-            self.show_toast("SSH key generation is disabled in production mode.")
-            log.info("SSH keygen skipped (production mode)")
-            return
-        key_path = os.path.join(os.path.expanduser("~"), ".ssh", "visiondock_zt")
-        ssh_dir = os.path.dirname(key_path)
-        os.makedirs(ssh_dir, exist_ok=True)
-        if os.path.exists(key_path):
-            self.show_toast(f"Key already exists: {key_path}")
-            return
-        try:
-            subprocess.run(["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", ""], check=True, capture_output=True, timeout=15)
-            QApplication.clipboard().setText(key_path)
-            self.show_toast(f"Key created; path copied: {key_path}. Add to device: ssh-copy-id -i {key_path}.pub user@host")
-        except FileNotFoundError:
-            QMessageBox.information(self, "SSH key", "ssh-keygen not found. Install OpenSSH on this system.")
-        except subprocess.CalledProcessError as e:
-            QMessageBox.warning(self, "SSH key", f"ssh-keygen error: {e.stderr.decode() if e.stderr else e}")
-
-    def _is_ssh_device_connected(self, host, user):
-        key = ssh_session_key(host, user)
-        client = self._ssh_sessions.get(key)
-        if client is None:
-            return False
-        try:
-            t = client.get_transport()
-            return t is not None and t.is_active()
-        except Exception:
-            return False
-
-    def _ssh_disconnect_device(self, host, user):
-        key = ssh_session_key(host, user)
-        self._remote_zt_node_by_session.pop(key, None)
-        old = self._ssh_sessions.pop(key, None)
-        if old is not None:
-            self.notify_info(f"SSH disconnected: {host}")
+    def refresh_devices_page(self, force: bool = False):
+        # Prevent multiple parallel pokes
+        if getattr(self, "_hw_worker_active", False): return
+        lay = getattr(self, "dev_hub_layout", None)
+        # Reuse recent scan data to avoid expensive re-scan on every tab switch.
+        if (not force) and lay is not None and lay.count() > 0:
             try:
-                old.close()
+                age = time.time() - float(getattr(self, "_devices_last_scan_ts", 0.0) or 0.0)
             except Exception:
-                pass
+                age = 999999.0
+            if age < float(getattr(self, "_devices_scan_ttl_sec", 45.0) or 45.0):
+                return
+        self._hw_worker_active = True
+        
+        # Show immediate placeholder if empty
+        if lay and lay.count() == 0:
+            tmp = QLabel("Scanning local and remote inspection devices...")
+            tmp.setObjectName("CaptionMuted")
+            lay.addWidget(tmp)
 
-    def _zt_peer_cache_key(self, node_id, path_ip: str) -> str:
-        nid = (node_id or "").strip()
-        if nid and nid != "—":
-            return nid
-        return f"path:{(path_ip or '').strip()}"
+        self._hw_worker = HardwareWorker()
+        self._hw_worker.finished.connect(self._on_hardware_ready)
+        self._hw_worker.start()
 
-    def _ensure_remote_zt_node_id(self, host, user) -> str:
-        """Bağlı oturumda uzak `zerotier-cli info` ile düğüm ID; tabloda peer yinelemesini önlemek için."""
-        key = ssh_session_key(host, user)
-        if key in self._remote_zt_node_by_session:
-            return self._remote_zt_node_by_session[key]
-        client = self._ssh_sessions.get(key)
-        if not client:
-            return ""
-        try:
-            out, _, _ = ssh_exec_text(client, "zerotier-cli info", timeout=10)
-            nid = parse_zerotier_info_output(out or "")
-            if nid:
-                self._remote_zt_node_by_session[key] = nid
-                return nid
-        except Exception:
-            pass
-        return ""
+    def _on_hardware_ready(self, data):
+        self._hw_worker_active = False
+        if not data: return
+        self._devices_last_scan_ts = time.time()
+        lay = getattr(self, "dev_hub_layout", None)
+        if not lay: return
+        
+        # Clear
+        while lay.count():
+            it = lay.takeAt(0); w = it.widget()
+            if w: w.deleteLater()
 
-    def _use_zt_virtual_ip_as_remote(self, zt_ip: str):
-        """Docker/ayarlar için uzak host olarak ZT sanal IP'yi kaydet ve Settings sekmesine geç."""
-        zt_ip = (zt_ip or "").strip()
-        if not zt_ip:
-            return
-        save_app_prefs_remote_host(zt_ip)
-        if getattr(self, "node_ip", None):
-            self.node_ip.setText(zt_ip)
-        DockerManager.set_host(zt_ip)
-        self.switch(5)
-        self.show_toast(f"Remote host (ZT) ayarlandı: {zt_ip}")
+        def make_premium_card(title, subtitle, status_txt, is_online=True, cameras=None, is_remote=False, remote_ip=None):
+            cameras = cameras or []
+            c = QFrame(); c.setObjectName("InfoCard")
+            c.setMinimumWidth(360)
+            c.setMaximumWidth(520)
+            c.setMinimumHeight(220)
+            c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            cl = QVBoxLayout(c); cl.setContentsMargins(22, 22, 22, 22); cl.setSpacing(14)
+            
+            hh = QHBoxLayout(); th = QLabel(title); th.setObjectName("SectionHeading")
+            hh.addWidget(th); hh.addStretch()
+            st_dot = QLabel(f"● {status_txt}"); clr = "#30D158" if is_online else "#FF453A"
+            st_dot.setObjectName("DeviceCardStatus")
+            st_dot.setStyleSheet(f"color: {clr};")
+            hh.addWidget(st_dot); cl.addLayout(hh)
+            
+            sub = QLabel(subtitle); sub.setObjectName("CaptionMutedSm"); cl.addWidget(sub)
+            cl.addWidget(hairline())
+            
+            if is_remote:
+                row = QFrame(); row.setObjectName("SettingsInset"); row.setFixedHeight(50)
+                rl = QHBoxLayout(row); rl.setContentsMargins(15, 0, 15, 0)
+                tmp = QLabel("Remote Runtime")
+                tmp.setObjectName("DeviceCardAccent")
+                rl.addWidget(tmp)
+                rl.addStretch()
+                ab = QPushButton("Use as runtime"); ab.setObjectName("BtnPrimary")
+                ab.setFixedWidth(126)
+                if remote_ip:
+                    ab.clicked.connect(lambda _=False, ip=remote_ip: self._apply_runtime_host_selection(ip))
+                ab.setEnabled(bool(remote_ip) and is_online)
+                rl.addWidget(ab); cl.addWidget(row)
+            
+            if cameras:
+                for cam in cameras:
+                    crow = QFrame(); crow.setObjectName("SettingsInset"); crow.setFixedHeight(44)
+                    crl = QHBoxLayout(crow); crl.setContentsMargins(14, 0, 14, 0); crl.setSpacing(12)
+                    ico_container = QFrame(); ico_container.setFixedSize(24, 24)
+                    ico_container.setStyleSheet("background: #111; border-radius: 6px; border: 1px solid #222;")
+                    icl = QVBoxLayout(ico_container); icl.setContentsMargins(0,0,0,0); icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    f_obj = QLabel("C"); f_obj.setStyleSheet("font-size: 10px; font-weight: 900; color: #0A84FF;"); icl.addWidget(f_obj)
+                    crl.addWidget(ico_container)
+                    n_lbl = QLabel(f"{cam[:18]}")
+                    n_lbl.setObjectName("DeviceCamName")
+                    crl.addWidget(n_lbl); crl.addStretch()
+                    ub = QPushButton("Open inspection")
+                    ub.setObjectName("BtnSecondary")
+                    ub.setFixedWidth(126)
+                    ub.setCursor(Qt.CursorShape.PointingHandCursor)
+                    ub.clicked.connect(lambda _=False: self.switch(1)); crl.addWidget(ub)
+                    cl.addWidget(crow)
+            elif not is_remote:
+                tmp = QLabel("No local camera sources detected."); tmp.setObjectName("CaptionMuted"); cl.addWidget(tmp)
+            cl.addStretch(); return c
 
-    def _ssh_password_dialog(self, host, user, node_id=None):
-        """SSH şifre diyaloğu. İptal veya geçersiz hostta None; aksi halde (kullanıcı, şifre) döner."""
-        if not (host or "").strip():
-            QMessageBox.warning(self, "SSH", "Host boş — geçerli bir IP girin.")
-            return None
-        u = (user or "jetson").strip()
+        # A. Local System
+        local_cams = [f"{n}" for n, i in data.get("cams", [])]
+        lay.addWidget(make_premium_card("Local Inspection Host", "This computer / primary runtime host", "Online", True, local_cams))
+
+        # B. Remote ZeroTier Nodes
+        peers = data.get("peers", [])
+        my_nid = data.get("my_nid", "")
+        for p in peers:
+            if p.get("role") != "LEAF": continue
+            nid = (p.get("address") or "").strip()
+            if nid == my_nid: continue
+            ips = p.get("zt_from_controller", [])
+            display_ip = ips[0] if ips else p.get("ip", "—")
+            is_online = (p.get("status") == "ONLINE")
+            lay.addWidget(
+                make_premium_card(
+                    f"Runtime {nid[:6].upper()}",
+                    f"ZeroTier IP: {display_ip}",
+                    "Active" if is_online else "Offline",
+                    is_online,
+                    [],
+                    is_remote=True,
+                    remote_ip=display_ip,
+                )
+            )
+
+        return None
+
+    def _ssh_password_dialog(self, host: str, user: str, node_id: str = None):
+        username = (user or "jetson").strip() or "jetson"
         dlg = QDialog(self)
-        dlg.setWindowTitle("SSH Bağlantısı")
+        dlg.setWindowTitle("SSH Connection")
         dlg.setModal(True)
         dlg.setMinimumWidth(420)
         pal = ThemeOps.palette(self.is_dark)
@@ -5219,46 +5377,50 @@ class App(QMainWindow):
             f"QDialog {{ background-color: {pal['card']}; color: {pal['txt']}; }}"
             f"QLabel {{ color: {pal['txt']}; border: none; background: transparent; }}"
         )
-        fl = QFormLayout(dlg)
-        fl.setSpacing(14)
-        fl.setContentsMargins(28, 24, 28, 24)
-        ht = QLabel((host or "").strip())
-        ht.setObjectName("MonoIp")
-        ht.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        fl.addRow("IP Adresi:", ht)
+        form = QFormLayout(dlg)
+        form.setSpacing(14)
+        form.setContentsMargins(28, 24, 28, 24)
+
+        host_label = QLabel((host or "").strip())
+        host_label.setObjectName("MonoIp")
+        host_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow("Host", host_label)
         if node_id and node_id not in ("—", "", None):
-            nid_lbl = QLabel(node_id)
-            nid_lbl.setObjectName("MonoMuted")
-            nid_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            fl.addRow("ZT Node ID:", nid_lbl)
-        user_edit = QLineEdit(u)
+            node_label = QLabel(str(node_id))
+            node_label.setObjectName("MonoMuted")
+            node_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            form.addRow("Node ID", node_label)
+
+        user_edit = QLineEdit(username)
         user_edit.setPlaceholderText("jetson")
-        user_edit.setToolTip("SSH bağlantısı için kullanıcı adı (değiştirilebilir)")
-        fl.addRow("Kullanıcı:", user_edit)
-        pw = QLineEdit()
-        pw.setEchoMode(QLineEdit.EchoMode.Password)
-        pw.setPlaceholderText("SSH şifresi")
-        pw.returnPressed.connect(dlg.accept)
-        fl.addRow("Şifre:", pw)
+        form.addRow("User", user_edit)
+
+        password_edit = QLineEdit()
+        password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        password_edit.setPlaceholderText("SSH password")
+        password_edit.returnPressed.connect(dlg.accept)
+        form.addRow("Password", password_edit)
+
         hint = QLabel(
-            "Şifre yalnızca bu oturum için kullanılır ve kaydedilmez.\n"
-            "Bilinmeyen host anahtarları güvenilir ağlarda (ZeroTier) otomatik kabul edilir."
+            "The password is used only for this session and is never stored.\n"
+            "Unknown host keys are accepted automatically for trusted private networks such as ZeroTier."
         )
         hint.setObjectName("CaptionMuted")
         hint.setWordWrap(True)
-        fl.addRow(hint)
-        bb = QDialogButtonBox(
+        form.addRow(hint)
+
+        buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Bağlan")
-        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("İptal")
-        fl.addRow(bb)
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Connect")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
-        final_user = user_edit.text().strip() or "jetson"
-        return (final_user, pw.text())
+        return (user_edit.text().strip() or "jetson", password_edit.text())
 
     def _fetch_peer_zt_virtual_ips(self, path_ip: str, user: str, node_id: str, *, goto_devices: bool = False):
         """Path IP üzerinden SSH ile uzakta zerotier-cli çalıştırıp sanal IP'leri önbelleğe yazar."""
@@ -5270,7 +5432,7 @@ class App(QMainWindow):
         cache_key = self._zt_peer_cache_key(node_id, path_ip)
 
         def _after_fetch(ips: list, empty_msg: str):
-            self.refresh_devices_page()
+            self.refresh_devices_page(force=True)
             if goto_devices:
                 self.switch(3)
             if ips:
@@ -5353,530 +5515,141 @@ class App(QMainWindow):
         DockerManager.set_host(host)
         self.show_toast(f"Bağlantı kuruldu: {final_user}@{host}")
         self.notify_success(f"SSH bağlandı: {host}")
-        self.refresh_devices_page()
+        self.refresh_devices_page(force=True)
+
+    def _show_onboarding_wizard(self, force: bool = False):
+        prefs = load_app_prefs()
+        profile = load_inspection_profile()
+        runtime_cfg = profile.get("runtime") or {}
+        needs_setup = bool(force) or (not prefs.get("product_onboarding_done"))
+        if not needs_setup:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Production Setup")
+        dlg.resize(560, 420)
+        dlg.setSizeGripEnabled(True)
+        dlg.setModal(True)
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(24, 22, 24, 22)
+        outer.setSpacing(16)
+
+        title = QLabel("Prepare The Runtime Workspace")
+        title.setObjectName("SectionHeading")
+        outer.addWidget(title)
+
+        intro = QLabel(
+            "Configure the minimum production fields so the operator panel points to the correct runtime, "
+            "camera backend, and inspection name."
+        )
+        intro.setObjectName("CaptionMuted")
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setHorizontalSpacing(16)
+
+        name_edit = QLineEdit(profile.get("camera_name") or "")
+        name_edit.setPlaceholderText("Primary Runtime Node")
+        host_edit = QLineEdit(normalize_runtime_host(runtime_cfg.get("host") or "") or "127.0.0.1")
+        host_edit.setPlaceholderText("127.0.0.1 or ZeroTier/LAN runtime endpoint")
+
+        backend_combo = QComboBox()
+        backend_combo.setFixedHeight(38)
+        backend_options = [
+            ("Jetson CSI (Argus)", "jetson_csi_argus"),
+            ("OpenCV device", "opencv_device"),
+            ("Image file (test)", "image_file"),
+            ("Video file (test)", "video_file"),
+            ("Mock frame", "mock_frame"),
+        ]
+        for label, value in backend_options:
+            backend_combo.addItem(label, value)
+        target_backend = ((profile.get("camera") or {}).get("backend") or "jetson_csi_argus").strip()
+        idx = 0
+        for i in range(backend_combo.count()):
+            if backend_combo.itemData(i) == target_backend:
+                idx = i
+                break
+        backend_combo.setCurrentIndex(idx)
+
+        gpio_box = QCheckBox("Enable GPIO / tower lights")
+        gpio_box.setChecked(bool((profile.get("gpio") or {}).get("enabled")))
+
+        form.addRow(form_label("Runtime name"), name_edit)
+        form.addRow(form_label("Runtime host"), host_edit)
+        form.addRow(form_label("Capture backend"), backend_combo)
+        form.addRow(form_label("Hardware outputs"), gpio_box)
+        outer.addLayout(form)
+
+        sensor_note = QLabel(
+            "CSI sensor family is not an operator choice. The Jetson runtime should detect the installed module; "
+            "focus, zoom, and iris depend on the exact camera SKU and lens package, not only on IMX219 / IMX477 / IMX519."
+        )
+        sensor_note.setObjectName("CaptionMuted")
+        sensor_note.setWordWrap(True)
+        outer.addWidget(sensor_note)
+
+        checklist = QLabel(
+            "Recommended line setup:\n"
+            "1. At least one runtime endpoint is reachable.\n"
+            "2. CSI modules such as IMX219 / IMX477 / IMX519 use Jetson CSI (Argus).\n"
+            "3. Model package is exported from AI Models and activated on the runtime endpoint.\n"
+            "4. Operators focus on Inspection, Results, and basic Settings."
+        )
+        checklist.setObjectName("CaptionMuted")
+        checklist.setWordWrap(True)
+        outer.addWidget(checklist)
+
+        btns = QDialogButtonBox()
+        apply_btn = btns.addButton("Apply Setup", QDialogButtonBox.ButtonRole.AcceptRole)
+        skip_btn = btns.addButton("Skip", QDialogButtonBox.ButtonRole.RejectRole)
+        settings_btn = btns.addButton("Open Settings", QDialogButtonBox.ButtonRole.ActionRole)
+        apply_btn.setObjectName("BtnPrimary")
+        settings_btn.setObjectName("BtnSecondary")
+        skip_btn.setObjectName("BtnSecondary")
+        dlg._open_settings_only = False
+
+        def _open_settings_from_wizard():
+            dlg._open_settings_only = True
+            dlg.accept()
+
+        settings_btn.clicked.connect(_open_settings_from_wizard)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        outer.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            prefs["product_onboarding_done"] = True
+            save_app_prefs(prefs)
+            return
+
+        if getattr(dlg, "_open_settings_only", False):
+            prefs["product_onboarding_done"] = True
+            save_app_prefs(prefs)
+            self.switch(5)
+            return
+
+        if hasattr(self, "_inspection_camera_name_input"):
+            self._inspection_camera_name_input.setText((name_edit.text() or "").strip() or "VisionDock Runtime Node")
+        if hasattr(self, "_inspection_runtime_host_input"):
+            self._inspection_runtime_host_input.setText(normalize_runtime_host(host_edit.text()) or "127.0.0.1")
+        if hasattr(self, "_inspection_camera_backend_combo"):
+            for i in range(self._inspection_camera_backend_combo.count()):
+                if self._inspection_camera_backend_combo.itemData(i) == backend_combo.currentData():
+                    self._inspection_camera_backend_combo.setCurrentIndex(i)
+                    break
+        if hasattr(self, "_inspection_gpio_enable_switch"):
+            self._inspection_gpio_enable_switch.setChecked(gpio_box.isChecked())
+        self._save_inspection_profile_from_ui()
+        prefs["product_onboarding_done"] = True
+        save_app_prefs(prefs)
+        self.notify_success("Production runtime setup updated.")
+        self.switch(1)
 
     def page_settings(self):
-        sw = QScrollArea(); sw.setWidgetResizable(True); sw.setStyleSheet("background: transparent; border: none;")
-        w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(40,40,40,40); l.setSpacing(40)
-        sw.setWidget(w); polish_scroll_area(sw)
-        
-        # Section 1: Metrics
-        l.addWidget(settings_title("Live system metrics"))
-        metrics_card = QFrame()
-        metrics_card.setObjectName("InfoCard")
-        # Hidden node_ip for legacy logic compatibility
-        self.node_ip = QLineEdit(); self.node_ip.hide()
-        env_r = (os.getenv("JETSON_REMOTE") or "").strip()
-        file_r = (load_app_prefs().get("remote_host_ip") or "").strip()
-        self.node_ip.setText(env_r or file_r or "")
-        ml = QHBoxLayout(metrics_card)
-        ml.setSpacing(28)
-        ml.setContentsMargins(28, 28, 28, 28)
-        self.charts = [DonutChart("CPU","#EF4444"), DonutChart("RAM","#10B981"), DonutChart("Disk","#3B82F6"), DonutChart("GPU","#8B5CF6")]
-        for ch in self.charts:
-            ml.addWidget(ch)
-        l.addWidget(metrics_card)
-
-        # Section 2: Hardware Inventory
-        l.addWidget(settings_title("Hardware summary"))
-        hw = QFrame(); hw.setObjectName("InfoCard"); hl = QGridLayout(hw); hl.setContentsMargins(25,25,25,25); hl.setSpacing(30)
-        inf = [("Architecture", platform.machine()), ("CPU cores", str(psutil.cpu_count())), ("OS", platform.system()), ("Graphics", get_gpu_info())]
-        for i, (k, v) in enumerate(inf):
-            lv = QVBoxLayout()
-            lk = QLabel(k)
-            lk.setObjectName("CaptionMutedSm")
-            lv.addWidget(lk)
-            vv = QLabel(v)
-            vv.setObjectName("HWValue")
-            lv.addWidget(vv)
-            hl.addLayout(lv, 0, i)
-        l.addWidget(hw)
-
-        # B4 — ZeroTier Network Management card
-        l.addWidget(settings_title("System health & ZeroTier management"))
-        zt_mgmt_card = QFrame(); zt_mgmt_card.setObjectName("InfoCard")
-        ztm_l = QVBoxLayout(zt_mgmt_card); ztm_l.setContentsMargins(25, 20, 25, 20); ztm_l.setSpacing(12)
-        ztm_title = QLabel("Join / Leave a ZeroTier network")
-        ztm_title.setObjectName("SectionHeading")
-        ztm_l.addWidget(ztm_title)
-        ztm_hint = QLabel(
-            "Enter a 16-character Network ID and click Join. "
-            "The device must be Authorized in ZeroTier Central before traffic flows."
-        )
-        ztm_hint.setObjectName("CaptionMuted"); ztm_hint.setWordWrap(True)
-        ztm_l.addWidget(ztm_hint)
-        ztm_row = QHBoxLayout(); ztm_row.setSpacing(8)
-        self._zt_nwid_input = QLineEdit()
-        self._zt_nwid_input.setPlaceholderText("Network ID  (e.g. 8056c2e21c000001)")
-        self._zt_nwid_input.setMaxLength(16)
-        self._zt_nwid_input.setObjectName("SettingsInput")
-        self._zt_nwid_input.setFixedHeight(34)
-        self._zt_nwid_input.setToolTip(
-            "16-character ZeroTier Network ID.\n"
-            "Find it at: my.zerotier.com → Networks → your network."
-        )
-        ztm_row.addWidget(self._zt_nwid_input, 1)
-        _zt_join_btn = QPushButton("Join")
-        _zt_join_btn.setObjectName("PrimaryBtn")
-        _zt_join_btn.setFixedHeight(34)
-        _zt_join_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        _zt_join_btn.clicked.connect(self._zt_join_network)
-        ztm_row.addWidget(_zt_join_btn)
-        _zt_leave_btn = QPushButton("Leave")
-        _zt_leave_btn.setObjectName("DangerBtn")
-        _zt_leave_btn.setFixedHeight(34)
-        _zt_leave_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        _zt_leave_btn.clicked.connect(self._zt_leave_network)
-        ztm_row.addWidget(_zt_leave_btn)
-        ztm_l.addLayout(ztm_row)
-        _zt_central_lbl = QLabel('<a href="https://my.zerotier.com">Open ZeroTier Central ↗</a>')
-        _zt_central_lbl.setObjectName("CaptionMuted")
-        _zt_central_lbl.setOpenExternalLinks(True)
-        ztm_l.addWidget(_zt_central_lbl)
-        l.addWidget(zt_mgmt_card)
-
-        # Settings backup / restore actions
-        backup_card = QFrame(); backup_card.setObjectName("InfoCard")
-        bcl = QVBoxLayout(backup_card); bcl.setContentsMargins(25, 20, 25, 20); bcl.setSpacing(10)
-        btitle = QLabel("Settings backup")
-        btitle.setObjectName("SectionHeading")
-        bcl.addWidget(btitle)
-        bhint = QLabel("Export current app settings to JSON and import later for restore/migration.")
-        bhint.setObjectName("CaptionMuted")
-        bhint.setWordWrap(True)
-        bcl.addWidget(bhint)
-        brow = QHBoxLayout(); brow.setSpacing(10)
-        bex = QPushButton("Export Settings")
-        bex.setObjectName("BtnSecondary")
-        bex.setFixedHeight(32)
-        bex.setCursor(Qt.CursorShape.PointingHandCursor)
-        bex.clicked.connect(self.export_settings_json)
-        bim = QPushButton("Import Settings")
-        bim.setObjectName("BtnSecondary")
-        bim.setFixedHeight(32)
-        bim.setCursor(Qt.CursorShape.PointingHandCursor)
-        bim.clicked.connect(self.import_settings_json)
-        brow.addWidget(bex); brow.addWidget(bim); brow.addStretch()
-        bcl.addLayout(brow)
-        l.addWidget(backup_card)
-
-        # Notifications history panel
-        notif_card = QFrame(); notif_card.setObjectName("InfoCard")
-        ncl = QVBoxLayout(notif_card); ncl.setContentsMargins(25, 20, 25, 20); ncl.setSpacing(10)
-        ntitle = QLabel("Notifications")
-        ntitle.setObjectName("SectionHeading")
-        ncl.addWidget(ntitle)
-        self._notif_list_box = QVBoxLayout()
-        self._notif_list_box.setSpacing(6)
-        ncl.addLayout(self._notif_list_box)
-        nrow = QHBoxLayout()
-        nclear = QPushButton("Clear")
-        nclear.setObjectName("BtnSecondary")
-        nclear.setFixedHeight(28)
-        nclear.setCursor(Qt.CursorShape.PointingHandCursor)
-        nclear.clicked.connect(lambda: [setattr(self, "_notifications", []), self._refresh_notifications_panel()])
-        nrow.addWidget(nclear); nrow.addStretch()
-        ncl.addLayout(nrow)
-        l.addWidget(notif_card)
-        self._refresh_notifications_panel()
-
-        sys_info = QFrame(); sys_info.setObjectName("InfoCard"); sl_info = QVBoxLayout(sys_info); sl_info.setContentsMargins(25,25,25,25); sl_info.setSpacing(15)
-        
-        def add_status(lbl, val):
-            row = QHBoxLayout(); row.setSpacing(24)
-            ll = QLabel(lbl); ll.setObjectName("FormLabel")
-            ll.setMinimumWidth(160)
-            row.addWidget(ll)
-            vl = QLabel(val)
-            _ac = "#3B82F6" if getattr(self, "is_dark", True) else "#2563EB"
-            vl.setStyleSheet(f"color: {_ac}; font-size: 13px; font-weight: 700; border: none;")
-            row.addWidget(vl)
-            row.addStretch()
-            sl_info.addLayout(row)
-
-        _docker_running = DockerManager.is_running()
-        _docker_row = QHBoxLayout(); _docker_row.setSpacing(24)
-        _docker_lbl = QLabel("Docker engine"); _docker_lbl.setObjectName("FormLabel"); _docker_lbl.setMinimumWidth(160)
-        _docker_row.addWidget(_docker_lbl)
-        self._docker_status_lbl = QLabel("ACTIVE" if _docker_running else "OFFLINE")
-        self._docker_status_lbl.setStyleSheet(f"color: {'#30D158' if _docker_running else '#FF453A'}; font-size: 13px; font-weight: 700; border: none;")
-        _docker_row.addWidget(self._docker_status_lbl)
-        self._docker_start_btn = QPushButton("Start Docker")
-        self._docker_start_btn.setObjectName("BtnSecondary"); self._docker_start_btn.setFixedHeight(28); self._docker_start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._docker_start_btn.setVisible(not _docker_running)
-        self._docker_start_btn.clicked.connect(lambda: [DockerManager.start_service(), self.show_toast("Starting Docker…"), QTimer.singleShot(4500, self._refresh_docker_status)])
-        _docker_row.addWidget(self._docker_start_btn)
-        _docker_row.addStretch()
-        sl_info.addLayout(_docker_row)
-        cameras = list_cameras()
-        add_status("Cameras", ", ".join(str(c[1]) for c in cameras) if cameras else "None")
-        add_status("Platform", f"{platform.system()} {platform.machine()}")
-        l.addWidget(sys_info)
-
-        # Devices shortcut: SSH, ZeroTier, saved devices — quick link from Settings
-        dev_shortcut = QFrame(); dev_shortcut.setObjectName("InfoCard"); dsl = QVBoxLayout(dev_shortcut); dsl.setContentsMargins(25,20,25,20); dsl.setSpacing(12)
-        dsh = QLabel("Devices & Connectivity")
-        dsh.setObjectName("SectionHeading")
-        dsl.addWidget(dsh)
-        dss = QLabel("Manage ZeroTier peers, saved SSH devices, and connection keys.")
-        dss.setObjectName("CaptionMuted")
-        dsl.addWidget(dss)
-        go_dev = QPushButton("Manage connections"); go_dev.setObjectName("BtnPrimary"); go_dev.setCursor(Qt.CursorShape.PointingHandCursor); go_dev.setMaximumWidth(240); go_dev.setFixedHeight(38)
-        go_dev.clicked.connect(lambda: self.switch(3)); dsl.addWidget(go_dev)
-        l.addWidget(dev_shortcut)
-
-        # ZeroTier: multiple networks list + device/peer count
-        zt_networks = get_zerotier_networks()
-        peer_count = get_zerotier_peer_count()
-        zt_status = get_zerotier_status()
-        zt_local_ips = get_zerotier_local_ips()
-        if zt_networks or peer_count is not None or zt_status != "NOT INSTALLED":
-            l.addWidget(hairline())
-            zt_panel = QFrame()
-            zt_panel.setObjectName("NetworkInset")
-            zt_inner = QVBoxLayout(zt_panel)
-            zt_inner.setContentsMargins(16, 16, 16, 16)
-            zt_inner.setSpacing(14)
-            # --- ZT daemon status header row ---
-            zt_hdr = QHBoxLayout()
-            net_label = QLabel("ZeroTier networks")
-            net_label.setObjectName("NetworkPanelHeading")
-            zt_hdr.addWidget(net_label)
-            zt_hdr.addStretch(1)
-            _status_color = {"ONLINE": "#30D158", "OFFLINE": "#FF453A", "NOT INSTALLED": "#8E8E93", "UNKNOWN": "#FF9F0A"}.get(zt_status, "#8E8E93")
-            status_dot = QLabel(f"\u25cf {zt_status}")
-            status_dot.setObjectName("ZtStatusDot")
-            status_dot.setStyleSheet(f"color: {_status_color};")
-            zt_hdr.addWidget(status_dot)
-            zt_inner.addLayout(zt_hdr)
-            # --- Local ZT virtual IPs (this machine's assignedAddresses) ---
-            if zt_local_ips:
-                local_ip_row = QHBoxLayout()
-                local_ip_lbl = QLabel("Your ZeroTier IP:")
-                local_ip_lbl.setObjectName("FormLabelSm")
-                local_ip_row.addWidget(local_ip_lbl)
-                local_ip_val = QLabel("  ".join(zt_local_ips))
-                local_ip_val.setObjectName("MonoIp")
-                local_ip_val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                local_ip_row.addWidget(local_ip_val)
-                local_ip_row.addStretch(1)
-                _copy_lip_btn = QPushButton("Copy")
-                _copy_lip_btn.setObjectName("BtnSecondary")
-                _copy_lip_btn.setFixedHeight(24)
-                _copy_lip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                _copy_lip_btn.clicked.connect(lambda _, ips=zt_local_ips: [QApplication.clipboard().setText(ips[0]), self.show_toast(f"Copied: {ips[0]}")])
-                local_ip_row.addWidget(_copy_lip_btn)
-                zt_inner.addLayout(local_ip_row)
-            if zt_networks:
-                for net in zt_networks:
-                    nwid = net.get("nwid") or net.get("id") or "—"
-                    name = net.get("name") or nwid[:16]
-                    status = (net.get("status") or "—")
-                    addrs = net.get("assignedAddresses") or []
-                    if not isinstance(addrs, list):
-                        addrs = [addrs] if addrs else []
-                    ip_str = ", ".join(str(a) for a in addrs[:5]) if addrs else "—"
-                    row = QFrame()
-                    row.setObjectName("ZerotierNetRow")
-                    rl = QVBoxLayout(row)
-                    rl.setContentsMargins(14, 12, 14, 12)
-                    rl.setSpacing(6)
-                    nm = QLabel(name)
-                    nm.setObjectName("ZtNetTitle")
-                    rl.addWidget(nm)
-                    subl = QLabel(f"IP: {ip_str}  ·  {status}")
-                    subl.setObjectName("ZtNetDetail")
-                    rl.addWidget(subl)
-                    zt_inner.addWidget(row)
-            else:
-                nn = QLabel("No networks joined.")
-                nn.setObjectName("CaptionMuted")
-                zt_inner.addWidget(nn)
-            dev_row = QHBoxLayout()
-            pv = QLabel("Peers visible:")
-            pv.setObjectName("FormLabelSm")
-            dev_row.addWidget(pv)
-            dev_row.addStretch()
-            pc = QLabel(str(peer_count))
-            _ac = "#3B82F6" if getattr(self, "is_dark", True) else "#2563EB"
-            pc.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {_ac}; border: none;")
-            dev_row.addWidget(pc)
-            zt_inner.addLayout(dev_row)
-            peers_list = get_zerotier_peers()
-            if peers_list:
-                default_ssh_user = os.getenv("ZEROTIER_SSH_USER", "jetson")
-                peer_hdr = QLabel("Connected devices (copy IP or SSH)")
-                peer_hdr.setObjectName("NetworkPanelHeading")
-                peer_hdr.setStyleSheet("padding-top: 4px;")
-                zt_inner.addWidget(peer_hdr)
-                for pr in peers_list:
-                    role_badge = pr.get("role", "—")
-                    addr = pr.get("address", "—")
-                    lat = pr.get("latency") or 0
-                    peer_ip = (pr.get("ip") or "").strip()
-                    peer_row = QFrame()
-                    peer_row.setObjectName("PeerListRow")
-                    prl = QHBoxLayout(peer_row)
-                    prl.setContentsMargins(14, 10, 14, 10)
-                    prl.setSpacing(12)
-                    dot = QLabel()
-                    dot.setObjectName("PeerStatusDotOn" if pr.get("connected") else "PeerStatusDotOff")
-                    prl.addWidget(dot, alignment=Qt.AlignmentFlag.AlignVCenter)
-                    id_l = QLabel(addr)
-                    id_l.setObjectName("PeerIdLabel")
-                    prl.addWidget(id_l, alignment=Qt.AlignmentFlag.AlignVCenter)
-                    role_l = QLabel(role_badge)
-                    role_l.setObjectName("PeerRoleLabel")
-                    prl.addWidget(role_l, alignment=Qt.AlignmentFlag.AlignVCenter)
-                    ip_l = QLabel(peer_ip or "—")
-                    ip_l.setObjectName("PeerIpLabel")
-                    prl.addWidget(ip_l, alignment=Qt.AlignmentFlag.AlignVCenter)
-                    lat_l = QLabel(f"{lat} ms")
-                    lat_l.setObjectName("PeerLatencyLabel")
-                    prl.addWidget(lat_l, alignment=Qt.AlignmentFlag.AlignVCenter)
-                    prl.addStretch()
-                    if peer_ip and role_badge == "LEAF":
-                        ssh_cmd = f"ssh {default_ssh_user}@{peer_ip}"
-                        copy_btn = QPushButton("Copy SSH")
-                        copy_btn.setObjectName("BtnSecondary")
-                        copy_btn.setFixedHeight(30)
-                        copy_btn.setMinimumWidth(88)
-                        copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                        copy_btn.setToolTip(ssh_cmd)
-
-                        def _copy_ssh(cmd=ssh_cmd):
-                            QApplication.clipboard().setText(cmd)
-                            app = self.window()
-                            if app and hasattr(app, "show_toast"):
-                                app.show_toast("SSH command copied")
-
-                        copy_btn.clicked.connect(_copy_ssh)
-                        prl.addWidget(copy_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
-                        zt_fetch = QPushButton("ZT IP Al")
-                        zt_fetch.setObjectName("BtnSecondary")
-                        zt_fetch.setFixedHeight(30)
-                        zt_fetch.setMinimumWidth(88)
-                        zt_fetch.setCursor(Qt.CursorShape.PointingHandCursor)
-                        zt_fetch.setToolTip(
-                            "Path IP üzerinden SSH ile uzak zerotier-cli çalıştırır; sanal IP Devices sekmesinde görünür."
-                        )
-                        zt_fetch.clicked.connect(
-                            lambda _v=False, pip=peer_ip, aid=addr: self._fetch_peer_zt_virtual_ips(
-                                pip, default_ssh_user, aid, goto_devices=True
-                            )
-                        )
-                        prl.addWidget(zt_fetch, alignment=Qt.AlignmentFlag.AlignVCenter)
-                    zt_inner.addWidget(peer_row)
-                leaf_hint = QLabel(
-                    "LEAF = edge device. 'Copy SSH' copies ssh user@IP (default user: jetson; override with ZEROTIER_SSH_USER)."
-                )
-                leaf_hint.setObjectName("CaptionMuted")
-                leaf_hint.setStyleSheet("font-size: 11px; font-weight: 600; padding-top: 4px;")
-                zt_inner.addWidget(leaf_hint)
-            l.addWidget(zt_panel)
-
-        l.addWidget(settings_title("Global preferences"))
-        pref_card = QFrame()
-        pref_card.setObjectName("InfoCard")
-        pref_l = QVBoxLayout(pref_card)
-        pref_l.setContentsMargins(28, 24, 28, 24)
-        pref_l.setSpacing(18)
-        dh = QHBoxLayout()
-        eco_l = QLabel("Eco mode (thermal guard)")
-        eco_l.setObjectName("SettingsRowLabel")
-        dh.addWidget(eco_l)
-        ts = ToggleSwitch()
-        ts.toggled.connect(self.toggle_eco)
-        dh.addStretch()
-        dh.addWidget(ts)
-        pref_l.addLayout(dh)
-        ph = QHBoxLayout()
-        dark_l = QLabel("Dark theme")
-        dark_l.setObjectName("SettingsRowLabel")
-        ph.addWidget(dark_l)
-        ps = ToggleSwitch()
-        ps.toggled.connect(self.toggle_theme)
-        ph.addStretch()
-        ph.addWidget(ps)
-        pref_l.addLayout(ph)
-        l.addWidget(pref_card)
-        l.addWidget(hairline())
-
-        # Camera defaults (CSI / Jetson): compact form, no wide label/field gap; AE block hidden when lock off
-        l.addWidget(settings_title("Camera defaults (CSI / Jetson)"))
-        cam_row = QHBoxLayout()
-        cam_row.addStretch(1)
-        cam_def = QFrame()
-        cam_def.setObjectName("InfoCard")
-        cam_def.setMaximumWidth(640)
-        cdl = QVBoxLayout(cam_def)
-        cdl.setContentsMargins(25, 25, 25, 25)
-        cdl.setSpacing(16)
-        defs = get_camera_defaults()
-        cam_form = QFormLayout()
-        cam_form.setSpacing(14)
-        cam_form.setHorizontalSpacing(16)
-        cam_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        cam_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        self.camera_res_combo = QComboBox()
-        self.camera_res_combo.setView(QListView())
-        self.camera_res_combo.setFixedHeight(40)
-        self.camera_res_combo.setMaximumWidth(250)
-        for i, preset in enumerate(CAMERA_RESOLUTION_PRESETS):
-            self.camera_res_combo.addItem(preset[0], i)
-        self.camera_res_combo.setCurrentIndex(min(defs["resolution_index"], self.camera_res_combo.count() - 1))
-        self.camera_res_combo.currentIndexChanged.connect(lambda i: set_camera_defaults(resolution_index=i))
-        cam_form.addRow(form_label("Resolution"), self.camera_res_combo)
-        aelock_cell = QWidget()
-        ael_h = QHBoxLayout(aelock_cell)
-        ael_h.setContentsMargins(0, 0, 0, 0)
-        self.camera_aelock_switch = ToggleSwitch()
-        self.camera_aelock_switch.setChecked(defs.get("aelock", False))
-        self.camera_aelock_switch.toggled.connect(lambda c: [set_camera_defaults(aelock=c), self._update_aelock_sliders_visibility()])
-        ael_h.addWidget(self.camera_aelock_switch)
-        ael_h.addStretch()
-        cam_form.addRow(form_label("AE lock (manual exposure)"), aelock_cell)
-        cdl.addLayout(cam_form)
-
-        self.camera_exp_block = QWidget()
-        ev = QVBoxLayout(self.camera_exp_block)
-        ev.setContentsMargins(0, 0, 0, 0)
-        ev.setSpacing(10)
-        ev.addWidget(form_label_sm("Exposure (when AE lock is on)"))
-        self.camera_exposure_slider = QSlider(Qt.Orientation.Horizontal)
-        self.camera_exposure_slider.setRange(100, 100000)
-        self.camera_exposure_slider.setValue(defs.get("v4l2_exposure", 5000))
-        self.camera_exposure_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.camera_exposure_slider.setTickInterval(10000)
-        self.camera_exposure_slider.valueChanged.connect(lambda v: [set_camera_defaults(v4l2_exposure=v), self._apply_v4l2_exposure_gain()])
-        ev.addWidget(self.camera_exposure_slider)
-        ev.addWidget(form_label_sm("Gain (when AE lock is on)"))
-        self.camera_gain_slider = QSlider(Qt.Orientation.Horizontal)
-        self.camera_gain_slider.setRange(1, 200)
-        self.camera_gain_slider.setValue(defs.get("v4l2_gain", 16))
-        self.camera_gain_slider.valueChanged.connect(lambda v: [set_camera_defaults(v4l2_gain=v), self._apply_v4l2_exposure_gain()])
-        ev.addWidget(self.camera_gain_slider)
-        exp_hint = QLabel("Applies to /dev/video0 when AE lock is on. Restart the stream after changing AE lock.")
-        exp_hint.setObjectName("CaptionMuted")
-        exp_hint.setWordWrap(True)
-        ev.addWidget(exp_hint)
-        cdl.addWidget(self.camera_exp_block)
-
-        cdl.addWidget(hairline())
-        cam_form2 = QFormLayout()
-        cam_form2.setSpacing(14)
-        cam_form2.setHorizontalSpacing(16)
-        cam_form2.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        cam_form2.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        self.camera_i2c_spin = QSpinBox()
-        self.camera_i2c_spin.setRange(0, 15)
-        self.camera_i2c_spin.setValue(int(defs.get("i2c_bus", 10)))
-        self.camera_i2c_spin.valueChanged.connect(lambda v: set_camera_defaults(i2c_bus=v))
-        i2c_cell = QWidget()
-        i2c_h = QHBoxLayout(i2c_cell)
-        i2c_h.setContentsMargins(0, 0, 0, 0)
-        i2c_h.addWidget(self.camera_i2c_spin)
-        i2c_h.addStretch()
-        cam_form2.addRow(form_label("I2C bus (focus motor)"), i2c_cell)
-        self.camera_sensor_spin = QSpinBox()
-        self.camera_sensor_spin.setRange(0, 3)
-        self.camera_sensor_spin.setValue(int(defs.get("sensor_id", 0)))
-        self.camera_sensor_spin.valueChanged.connect(lambda v: set_camera_defaults(sensor_id=v))
-        sid_cell = QWidget()
-        sid_h = QHBoxLayout(sid_cell)
-        sid_h.setContentsMargins(0, 0, 0, 0)
-        sid_h.addWidget(self.camera_sensor_spin)
-        sid_h.addStretch()
-        cam_form2.addRow(form_label("CSI sensor-id (autofocus)"), sid_cell)
-        i2c_hint = QLabel("Match I2C bus to your Jetson port (see docs). i2cset may require root or the i2c group.")
-        i2c_hint.setObjectName("CaptionMuted")
-        i2c_hint.setWordWrap(True)
-        cam_form2.addRow(i2c_hint)
-        self.camera_focus_combo = QComboBox()
-        self.camera_focus_combo.setView(QListView())
-        self.camera_focus_combo.setFixedHeight(40)
-        self.camera_focus_combo.setMaximumWidth(200)
-        self.camera_focus_combo.addItem("Fixed", "fixed")
-        self.camera_focus_combo.addItem("Manual", "manual")
-        self.camera_focus_combo.addItem("Auto", "auto")
-        fm = defs.get("focus_mode", "fixed")
-        idx = {"fixed": 0, "manual": 1, "auto": 2}.get(fm, 0)
-        self.camera_focus_combo.setCurrentIndex(idx)
-        self.camera_focus_combo.currentIndexChanged.connect(
-            lambda: [set_camera_defaults(focus_mode=self.camera_focus_combo.currentData()), self._update_focus_controls_visibility()]
-        )
-        cam_form2.addRow(form_label("Focus mode (motorized CSI)"), self.camera_focus_combo)
-        cdl.addLayout(cam_form2)
-
-        self.camera_focus_slider_label = form_label_sm("Fixed position (0=infinity):")
-        fs_host = QWidget()
-        fs_wrap = QVBoxLayout(fs_host)
-        fs_wrap.setContentsMargins(0, 0, 0, 0)
-        fs_wrap.setSpacing(8)
-        fs_wrap.addWidget(self.camera_focus_slider_label)
-        self.camera_focus_slider = QSlider(Qt.Orientation.Horizontal)
-        self.camera_focus_slider.setRange(0, 1023)
-        self.camera_focus_slider.setValue(defs.get("focus_position", 512))
-        self.camera_focus_slider.valueChanged.connect(lambda v: set_camera_defaults(focus_position=v))
-        
-        slider_row = QHBoxLayout()
-        slider_row.addWidget(self.camera_focus_slider)
-        slider_row.addStretch()
-        fs_wrap.addLayout(slider_row)
-        cdl.addWidget(fs_host)
-
-        btn_host = QWidget()
-        btn_l = QHBoxLayout(btn_host)
-        btn_l.setContentsMargins(0,0,0,0)
-        self.camera_focus_apply_btn = QPushButton("Set fixed position")
-        self.camera_focus_apply_btn.setObjectName("BtnPrimary")
-        self.camera_focus_apply_btn.setMinimumHeight(44)
-        self.camera_focus_apply_btn.setMaximumWidth(200)
-        self.camera_focus_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.camera_focus_apply_btn.clicked.connect(self._apply_focus_imx519)
-        btn_l.addWidget(self.camera_focus_apply_btn)
-        btn_l.addStretch()
-        cdl.addWidget(btn_host)
-        focus_long = QLabel(
-            "Fixed: one position at stream start. Manual: slider + button. Auto: scripts/autofocus_imx519.py. "
-            "Stop live CSI preview when possible."
-        )
-        focus_long.setObjectName("CaptionMuted")
-        focus_long.setWordWrap(True)
-        cdl.addWidget(focus_long)
-        cam_note = QLabel("New streams use these values. Changing AE lock or resolution needs a stream restart.")
-        cam_note.setObjectName("CaptionMuted")
-        cam_note.setWordWrap(True)
-        cdl.addWidget(cam_note)
-        cam_row.addWidget(cam_def, 0, Qt.AlignmentFlag.AlignTop)
-        cam_row.addStretch(1)
-        l.addLayout(cam_row)
-        self._update_aelock_sliders_visibility()
-        self._update_focus_controls_visibility()
-        l.addWidget(hairline())
-
-        # Section 4: Docker Image Management (Now at bottom)
-        ih = QHBoxLayout()
-        ih.addWidget(settings_title("Image repository"))
-        ih.addStretch()
-        ih.addWidget(make_icon_refresh_button(self.refresh_images, "Refresh Docker images"))
-        l.addLayout(ih)
-        
-        ic = QFrame(); ic.setObjectName("InfoCard"); il = QVBoxLayout(ic); il.setContentsMargins(20,20,20,20); il.setSpacing(10)
-        hl = QHBoxLayout()
-        rep_h = QLabel("REPOSITORY")
-        rep_h.setObjectName("CaptionMutedSm")
-        sz_h = QLabel("SIZE")
-        sz_h.setObjectName("CaptionMutedSm")
-        sz_h.setStyleSheet("margin-right: 60px;")
-        hl.addWidget(rep_h)
-        hl.addStretch()
-        hl.addWidget(sz_h)
-        il.addLayout(hl)
-        il.addWidget(hairline())
-        self.img_list_layout = QVBoxLayout(); self.img_list_layout.setSpacing(8); il.addLayout(self.img_list_layout)
-        self.refresh_images(); l.addWidget(ic)
-        l.addStretch(); return sw
+        return build_settings_page(self, _settings_page_helpers())
 
     def _update_aelock_sliders_visibility(self):
         on = getattr(self, "camera_aelock_switch", None) and self.camera_aelock_switch.isChecked()
@@ -5884,20 +5657,704 @@ class App(QMainWindow):
         if blk is not None:
             blk.setVisible(on)
 
+    def _selected_camera_sensor_model(self):
+        combo = getattr(self, "camera_sensor_model_combo", None)
+        if combo is not None:
+            return str(combo.currentData() or "GENERIC_CSI").strip().upper() or "GENERIC_CSI"
+        return str(get_camera_defaults().get("sensor_model") or "GENERIC_CSI").strip().upper() or "GENERIC_CSI"
+
+    def _selected_camera_focuser_type(self):
+        combo = getattr(self, "camera_focuser_combo", None)
+        sensor_model = self._selected_camera_sensor_model()
+        if combo is not None:
+            return str(combo.currentData() or csi_sensor_default_focuser(sensor_model)).strip().lower() or "none"
+        defaults = get_camera_defaults()
+        return str(defaults.get("focuser_type") or csi_sensor_default_focuser(sensor_model)).strip().lower() or "none"
+
+    def _on_camera_sensor_model_changed(self):
+        sensor_model = self._selected_camera_sensor_model()
+        set_camera_defaults(sensor_model=sensor_model)
+        self._refresh_camera_sensor_profile_hint()
+
+    def _refresh_camera_sensor_profile_hint(self):
+        sensor_model = self._selected_camera_sensor_model()
+        focuser_type = self._selected_camera_focuser_type()
+        rec = csi_sensor_recommended_capture(sensor_model)
+        hint = getattr(self, "_camera_sensor_profile_hint", None)
+        if hint is not None:
+            hint.setText(
+                f"{csi_sensor_label(sensor_model)}: {csi_sensor_note(sensor_model)} "
+                f"Recommended start point: {int(rec['width'])}x{int(rec['height'])} @ {int(rec['fps'])} fps. "
+                f"Focus actuator: {focuser_label(focuser_type)}. {focuser_note(focuser_type)}"
+            )
+        commissioning_hint = getattr(self, "_camera_commissioning_hint", None)
+        if commissioning_hint is not None:
+            if getattr(self, "_production_mode", False):
+                commissioning_hint.setText(
+                    "Production mode: sensor family and focus actuator are commissioning-only. Daily operators should not change them."
+                )
+            else:
+                commissioning_hint.setText(
+                    "Use this only during engineering bring-up. Sensor family helps with recommended defaults and validation, "
+                    "but focus, zoom, and iris remain dependent on the exact camera module and lens."
+                )
+        self._update_focus_controls_visibility()
+
+    def _apply_camera_sensor_recommendation(self):
+        sensor_model = self._selected_camera_sensor_model()
+        rec = csi_sensor_recommended_capture(sensor_model)
+        set_camera_defaults(
+            sensor_model=sensor_model,
+            focuser_type=self._selected_camera_focuser_type(),
+            resolution_index=csi_sensor_default_resolution_index(sensor_model),
+        )
+        if getattr(self, "camera_res_combo", None):
+            idx = min(csi_sensor_default_resolution_index(sensor_model), self.camera_res_combo.count() - 1)
+            self.camera_res_combo.setCurrentIndex(max(0, idx))
+        self.notify_success(
+            f"Applied recommended CSI preset for {csi_sensor_label(sensor_model)}: "
+            f"{int(rec['width'])}x{int(rec['height'])} @ {int(rec['fps'])} fps."
+        )
+        self._refresh_camera_sensor_profile_hint()
+
     def _update_focus_controls_visibility(self):
         """Update slider label and button text for Fixed / Manual / Auto focus modes."""
         mode = (get_camera_defaults().get("focus_mode") or "fixed")
         if getattr(self, "camera_focus_combo", None): mode = self.camera_focus_combo.currentData() or mode
+        focuser_type = self._selected_camera_focuser_type()
+        focus_enabled = focuser_available(focuser_type)
         lbl = getattr(self, "camera_focus_slider_label", None)
         btn = getattr(self, "camera_focus_apply_btn", None)
+        combo = getattr(self, "camera_focus_combo", None)
+        slider = getattr(self, "camera_focus_slider", None)
+        i2c_spin = getattr(self, "camera_i2c_spin", None)
+        detail = getattr(self, "_camera_focus_long_label", None)
+        if combo is not None:
+            combo.setEnabled(focus_enabled)
+        if slider is not None:
+            slider.setEnabled(focus_enabled)
+        if i2c_spin is not None:
+            i2c_spin.setEnabled(focus_enabled)
         if lbl:
-            if mode == "fixed": lbl.setText("Fixed position (0=infinity):")
-            elif mode == "manual": lbl.setText("Focus position (manual):")
-            else: lbl.setText("Focus position:")
+            if not focus_enabled:
+                lbl.setText("Fixed lens configuration")
+            elif mode == "fixed":
+                lbl.setText("Fixed position (0=infinity):")
+            elif mode == "manual":
+                lbl.setText("Focus position (manual):")
+            else:
+                lbl.setText("Focus position:")
         if btn:
-            if mode == "fixed": btn.setText("Set fixed position")
-            elif mode == "manual": btn.setText("Apply focus")
-            else: btn.setText("Run autofocus")
+            btn.setEnabled(focus_enabled)
+            if not focus_enabled:
+                btn.setText("No focus motor")
+            elif mode == "fixed":
+                btn.setText("Set fixed position")
+            elif mode == "manual":
+                btn.setText("Apply focus")
+            else:
+                btn.setText("Run autofocus")
+        if detail:
+            if not focus_enabled:
+                detail.setText(
+                    "This CSI setup is configured as fixed lens. Focus scripts stay disabled until you choose a motorized focuser."
+                )
+            else:
+                detail.setText(
+                    "Fixed: one position at stream start. Manual: slider + button. Auto: runs the selected I2C focuser script. "
+                    "Stop live CSI preview when possible."
+                )
+
+    def _selected_inspection_sensor_model(self):
+        combo = getattr(self, "_inspection_camera_model_combo", None)
+        if combo is not None:
+            return str(combo.currentData() or "GENERIC_CSI").strip().upper() or "GENERIC_CSI"
+        profile = load_inspection_profile()
+        camera_cfg = profile.get("camera") or {}
+        return str(camera_cfg.get("sensor_model") or "GENERIC_CSI").strip().upper() or "GENERIC_CSI"
+
+    def _selected_inspection_focuser_type(self):
+        combo = getattr(self, "_inspection_camera_focuser_combo", None)
+        sensor_model = self._selected_inspection_sensor_model()
+        if combo is not None:
+            return str(combo.currentData() or csi_sensor_default_focuser(sensor_model)).strip().lower() or "none"
+        profile = load_inspection_profile()
+        camera_cfg = profile.get("camera") or {}
+        return str(camera_cfg.get("focuser_type") or csi_sensor_default_focuser(sensor_model)).strip().lower() or "none"
+
+    def _on_inspection_camera_sensor_model_changed(self):
+        if getattr(self, "_inspection_ui_loading", False):
+            return
+        self._save_inspection_profile_from_ui()
+        self._refresh_inspection_camera_profile_hint()
+
+    def _refresh_inspection_camera_profile_hint(self):
+        hint = getattr(self, "_inspection_camera_profile_hint", None)
+        if hint is None:
+            return
+        sensor_model = self._selected_inspection_sensor_model()
+        focuser_type = self._selected_inspection_focuser_type()
+        rec = csi_sensor_recommended_capture(sensor_model)
+        hint.setText(
+            f"{csi_sensor_label(sensor_model)}: {csi_sensor_note(sensor_model)} "
+            f"Recommended starting capture: {int(rec['width'])}x{int(rec['height'])} @ {int(rec['fps'])} fps. "
+            f"Focus actuator: {focuser_label(focuser_type)}. {focuser_note(focuser_type)}"
+        )
+        self._refresh_inspection_runtime_sensor_hint()
+
+    def _refresh_inspection_runtime_sensor_hint(self):
+        lbl = getattr(self, "_inspection_runtime_sensor_hint", None)
+        if lbl is None:
+            return
+        current = getattr(self, "_inspection_runtime_state", {}) or {}
+        configured_sensor = self._selected_inspection_sensor_model()
+        detected_sensor = str(current.get("detected_sensor_model") or "").strip().upper()
+        match = current.get("camera_sensor_match")
+        if detected_sensor:
+            if match is False:
+                lbl.setText(
+                    f"Runtime detected {detected_sensor}, but commissioning metadata is {configured_sensor}. "
+                    "Fix this mismatch before production."
+                )
+            elif match is True:
+                lbl.setText(
+                    f"Runtime detected {detected_sensor}. Commissioning metadata matches the installed sensor family."
+                )
+            else:
+                lbl.setText(
+                    f"Runtime detected {detected_sensor}. Sensor family is verified by the Jetson runtime."
+                )
+            return
+        if getattr(self, "_production_mode", False):
+            lbl.setText(
+                "Production mode: leave sensor family and focus actuator locked. Runtime detection will populate when the Jetson runtime is reachable."
+            )
+        else:
+            lbl.setText(
+                "Engineering mode: set sensor family only for commissioning. Zoom and aperture are lens-side properties and are not controlled from this product."
+            )
+
+    def _refresh_sock_detection_profile_hint(self):
+        lbl = getattr(self, "_inspection_sock_profile_hint", None)
+        if lbl is None:
+            return
+        recipe = (getattr(self, "_inspection_recipe_name_input", None) and self._inspection_recipe_name_input.text().strip()) or "default_recipe"
+        product = (getattr(self, "_inspection_product_label_input", None) and self._inspection_product_label_input.text().strip()) or "Inspection target"
+        defect_catalog = []
+        if getattr(self, "_inspection_defect_catalog_input", None):
+            defect_catalog = [part.strip() for part in self._inspection_defect_catalog_input.text().split(",") if part.strip()]
+        pass_thr = float(getattr(self, "_inspection_pass_threshold_spin", None).value() if getattr(self, "_inspection_pass_threshold_spin", None) else 0.35)
+        fail_thr = float(getattr(self, "_inspection_fail_threshold_spin", None).value() if getattr(self, "_inspection_fail_threshold_spin", None) else 0.65)
+        roi_enabled = bool(getattr(self, "_inspection_roi_enable_switch", None) and self._inspection_roi_enable_switch.isChecked())
+        if roi_enabled:
+            roi_text = (
+                f"ROI {self._inspection_roi_x_spin.value():.2f}, {self._inspection_roi_y_spin.value():.2f}, "
+                f"{self._inspection_roi_w_spin.value():.2f}, {self._inspection_roi_h_spin.value():.2f}"
+            )
+        else:
+            roi_text = "Full frame"
+        defect_text = ", ".join(defect_catalog[:4]) if defect_catalog else "No defect catalog defined"
+        lbl.setText(
+            f"{product} profile `{recipe}`. Thresholds: PASS <= {pass_thr:.2f}, FAIL >= {fail_thr:.2f}. "
+            f"Region: {roi_text}. Defects: {defect_text}."
+        )
+
+    def _select_settings_tab(self, index: int):
+        tabs = getattr(self, "_settings_tabs", None)
+        if tabs is None:
+            return
+        try:
+            target = int(index)
+        except (TypeError, ValueError):
+            return
+        if 0 <= target < tabs.count():
+            tabs.setCurrentIndex(target)
+
+    def _refresh_settings_hub(self):
+        profile = load_inspection_profile()
+        runtime_cfg = profile.get("runtime") or {}
+        camera_cfg = profile.get("camera") or {}
+        gpio_cfg = profile.get("gpio") or {}
+        runtime_host = normalize_runtime_host(runtime_cfg.get("host") or "") or "127.0.0.1"
+        runtime_port = int(runtime_cfg.get("port") or 8787)
+        trigger_mode = str(profile.get("trigger_mode") or "manual").strip()
+        trigger_text = {
+            "manual": "Manual trigger",
+            "input_pin": "Input pin trigger",
+            "continuous": "Continuous preview",
+        }.get(trigger_mode, trigger_mode.replace("_", " ").title())
+        capture_backend = str(camera_cfg.get("backend") or "mock_frame").replace("_", " ").title()
+        zt_status = get_zerotier_status()
+        zt_count = len(get_zerotier_networks() or [])
+        fleet_nodes = 0
+        try:
+            fleet_nodes = len({str(row[1]).strip() for row in (self.db.get_devices() or []) if str(row[1]).strip()})
+        except Exception:
+            fleet_nodes = 0
+        docker_state = "ACTIVE" if DockerManager.is_running() else "OFFLINE"
+        active_pkg = get_local_active_model_package() or {}
+        active_pkg_text = active_pkg.get("package_id") or active_pkg.get("version") or "No active package"
+
+        if getattr(self, "_settings_hub_station_btn", None):
+            self._settings_hub_station_btn.setText(
+                "Runtime Hub\n"
+                f"{runtime_host}:{runtime_port} • {fleet_nodes + 1} endpoints • {trigger_text}"
+            )
+        if getattr(self, "_settings_hub_network_btn", None):
+            suffix = "network" if zt_count == 1 else "networks"
+            self._settings_hub_network_btn.setText(
+                "Remote Access\n"
+                f"ZeroTier {zt_status} • {zt_count} {suffix}"
+            )
+        if getattr(self, "_settings_hub_system_btn", None):
+            self._settings_hub_system_btn.setText(
+                "Diagnostics\n"
+                f"Docker {docker_state} • {platform.system()} {platform.machine()}"
+            )
+        if getattr(self, "_settings_hub_maintenance_btn", None):
+            self._settings_hub_maintenance_btn.setText(
+                "Maintenance\n"
+                "Backup • Notifications • Preferences"
+            )
+        if getattr(self, "_settings_hub_models_btn", None):
+            self._settings_hub_models_btn.setText(
+                "Models & Workspaces\n"
+                f"Active package: {active_pkg_text}"
+            )
+        if getattr(self, "_settings_hub_engineering_btn", None):
+            self._settings_hub_engineering_btn.setText(
+                "Engineering\n"
+                "Commissioning and edge controls"
+            )
+        self._apply_settings_role_mode()
+
+        maintenance_summary = getattr(self, "_maintenance_snapshot_label", None)
+        if maintenance_summary is not None:
+            notif_count = len(getattr(self, "_notifications", []) or [])
+            maintenance_summary.setText(
+                f"Notifications: {notif_count} • Theme: {'Dark' if getattr(self, 'is_dark', True) else 'Light'} • "
+                f"Mode: {'Engineering' if getattr(self, '_ui_role_mode', 'operator') == 'engineering' else 'Operator'}\n"
+                f"Scheduler: {str(getattr(self, '_scheduler_policy', 'manual')).title()} • "
+                f"Checks: {'On' if getattr(self, '_background_health_checks_enabled', False) else 'Off'} • "
+                f"Auto preview: {'On' if getattr(self, '_auto_camera_preview_on_launch', False) else 'Off'} • "
+                f"Settings check: {'On' if getattr(self, '_check_remote_on_settings_open', False) else 'Off'}"
+            )
+        eco_switch = getattr(self, "_maintenance_eco_switch", None)
+        if eco_switch is not None and eco_switch.isChecked() != bool(getattr(self, "eco_mode", False)):
+            eco_switch.blockSignals(True)
+            eco_switch.setChecked(bool(getattr(self, "eco_mode", False)))
+            eco_switch.blockSignals(False)
+        theme_switch = getattr(self, "_maintenance_theme_switch", None)
+        if theme_switch is not None and theme_switch.isChecked() != bool(getattr(self, "is_dark", True)):
+            theme_switch.blockSignals(True)
+            theme_switch.setChecked(bool(getattr(self, "is_dark", True)))
+            theme_switch.blockSignals(False)
+        bg_switch = getattr(self, "_maintenance_bg_checks_switch", None)
+        if bg_switch is not None and bg_switch.isChecked() != bool(getattr(self, "_background_health_checks_enabled", False)):
+            bg_switch.blockSignals(True)
+            bg_switch.setChecked(bool(getattr(self, "_background_health_checks_enabled", False)))
+            bg_switch.blockSignals(False)
+        auto_switch = getattr(self, "_maintenance_camera_autostart_switch", None)
+        if auto_switch is not None and auto_switch.isChecked() != bool(getattr(self, "_auto_camera_preview_on_launch", False)):
+            auto_switch.blockSignals(True)
+            auto_switch.setChecked(bool(getattr(self, "_auto_camera_preview_on_launch", False)))
+            auto_switch.blockSignals(False)
+        settings_open_switch = getattr(self, "_maintenance_check_on_settings_open_switch", None)
+        if settings_open_switch is not None and settings_open_switch.isChecked() != bool(getattr(self, "_check_remote_on_settings_open", False)):
+            settings_open_switch.blockSignals(True)
+            settings_open_switch.setChecked(bool(getattr(self, "_check_remote_on_settings_open", False)))
+            settings_open_switch.blockSignals(False)
+        self._refresh_scheduler_profile_control()
+
+        remote_summary = getattr(self, "_remote_access_summary_label", None)
+        if remote_summary is not None:
+            remote_mode = "Primary runtime" if not runtime_host or runtime_host == "127.0.0.1" else "Distributed runtime"
+            remote_summary.setText(
+                f"{remote_mode} • Host: {runtime_host or '127.0.0.1'}\n"
+                f"Use Devices to manage additional edge nodes and ZeroTier inventory for fleet-wide operations ({fleet_nodes} registered nodes)."
+            )
+        runtime_chip = getattr(self, "_fleet_runtime_chip", None)
+        if runtime_chip is not None:
+            runtime_online = getattr(self, "_inspection_runtime_online", None)
+            if runtime_online is True:
+                self._set_status_pill(runtime_chip, "Runtime Online", "success")
+            elif runtime_online is False:
+                self._set_status_pill(runtime_chip, "Runtime Offline", "danger")
+            else:
+                self._set_status_pill(runtime_chip, "Runtime Unchecked", "neutral")
+        nodes_chip = getattr(self, "_fleet_nodes_chip", None)
+        if nodes_chip is not None:
+            nodes_text = f"{fleet_nodes + 1} Endpoints" if (fleet_nodes + 1) != 1 else "1 Endpoint"
+            self._set_status_pill(nodes_chip, nodes_text, "neutral")
+        zt_chip = getattr(self, "_fleet_zt_chip", None)
+        if zt_chip is not None:
+            zt_tone = "success" if str(zt_status).upper() == "ONLINE" else ("danger" if str(zt_status).upper() in ("OFFLINE", "NOT INSTALLED") else "neutral")
+            self._set_status_pill(zt_chip, f"ZT {zt_status}", zt_tone)
+
+        diagnostics_summary = getattr(self, "_diagnostics_snapshot_label", None)
+        if diagnostics_summary is not None:
+            runtime_state = "reachable" if getattr(self, "_inspection_runtime_online", None) is True else "unreachable"
+            if getattr(self, "_inspection_runtime_online", None) is None:
+                runtime_state = "not checked yet"
+            disk = psutil.disk_usage("/")
+            diagnostics_summary.setText(
+                f"Docker: {docker_state} • Runtime: {runtime_state}\n"
+                f"Disk free: {int(disk.free / (1024**3))} GB • Platform: {platform.system()} {platform.machine()}"
+            )
+
+        snapshot = getattr(self, "_settings_station_snapshot", None)
+        if snapshot is not None:
+            station_name = str(profile.get("camera_name") or "VisionDock Runtime Node")
+            gpio_text = "LED enabled" if gpio_cfg.get("enabled") else "LED disabled"
+            snapshot.setText(
+                f"{station_name}\n"
+                f"Runtime endpoint: {runtime_host}:{runtime_port} • Capture: {capture_backend} • {trigger_text}\n"
+                f"I/O: {gpio_text} • Output backend: {profile.get('output_backend') or 'mock'}"
+            )
+
+    def refresh_settings_page(self):
+        if hasattr(self, "_sync_inspection_profile_ui"):
+            try:
+                self._sync_inspection_profile_ui()
+            except Exception:
+                pass
+        if hasattr(self, "_refresh_docker_status"):
+            try:
+                self._refresh_docker_status()
+            except Exception:
+                pass
+        if hasattr(self, "_refresh_notifications_panel"):
+            try:
+                self._refresh_notifications_panel()
+            except Exception:
+                pass
+        self._refresh_settings_hub()
+
+    def _apply_camera_commissioning_constraints(self):
+        locked = bool(getattr(self, "_production_mode", False))
+        for widget_name in (
+            "camera_sensor_model_combo",
+            "camera_focuser_combo",
+            "camera_sensor_preset_btn",
+            "_inspection_camera_model_combo",
+            "_inspection_camera_focuser_combo",
+            "_inspection_camera_apply_preset_btn",
+        ):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.setEnabled(not locked)
+        self._refresh_camera_sensor_profile_hint()
+        self._refresh_inspection_runtime_sensor_hint()
+
+    def _apply_inspection_camera_recommendation(self):
+        sensor_model = self._selected_inspection_sensor_model()
+        rec = csi_sensor_recommended_capture(sensor_model)
+        if getattr(self, "_inspection_camera_width_spin", None):
+            self._inspection_camera_width_spin.setValue(int(rec["width"]))
+        if getattr(self, "_inspection_camera_height_spin", None):
+            self._inspection_camera_height_spin.setValue(int(rec["height"]))
+        if getattr(self, "_inspection_camera_fps_spin", None):
+            self._inspection_camera_fps_spin.setValue(int(rec["fps"]))
+        self._save_inspection_profile_from_ui()
+        self.notify_success(
+            f"Applied recommended inspection capture for {csi_sensor_label(sensor_model)}: "
+            f"{int(rec['width'])}x{int(rec['height'])} @ {int(rec['fps'])} fps."
+        )
+        self._refresh_inspection_camera_profile_hint()
+
+    def _inspection_pin_combo_value(self, combo):
+        if combo is None:
+            return None
+        data = combo.currentData()
+        if data in (None, "", "none"):
+            return None
+        try:
+            return int(data)
+        except (TypeError, ValueError):
+            return None
+
+    def _populate_inspection_pin_combo(self, combo, board_id: str, selected_pin, none_label: str):
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(none_label, None)
+        pins = jetson_board_pins(board_id)
+        for pin in pins:
+            combo.addItem(format_jetson_pin_label(pin), int(pin.get("board_pin")))
+        target = None
+        try:
+            if selected_pin is not None:
+                target = int(selected_pin)
+        except (TypeError, ValueError):
+            target = None
+        idx = 0
+        if target is not None:
+            for i in range(combo.count()):
+                if combo.itemData(i) == target:
+                    idx = i
+                    break
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _refresh_inspection_pin_summary(self):
+        lbl = getattr(self, "_inspection_pin_summary", None)
+        if lbl is None:
+            return
+        board_id = (getattr(self, "_inspection_board_combo", None) and self._inspection_board_combo.currentData()) or ""
+        gpio_enabled = bool(getattr(self, "_inspection_gpio_enable_switch", None) and self._inspection_gpio_enable_switch.isChecked())
+        backend = (getattr(self, "_inspection_backend_combo", None) and self._inspection_backend_combo.currentText()) or "Mock output"
+        sensor_model = self._selected_inspection_sensor_model()
+        focuser_type = self._selected_inspection_focuser_type()
+        parts = [
+            f"Backend: {backend}",
+            f"Camera={((getattr(self, '_inspection_camera_backend_combo', None) and self._inspection_camera_backend_combo.currentText()) or 'Mock frame')}",
+            f"Sensor={csi_sensor_label(sensor_model)}",
+            f"Focus={focuser_label(focuser_type)}",
+            f"GPIO: {'enabled' if gpio_enabled else 'disabled'}",
+            f"PASS={inspection_pin_display(board_id, self._inspection_pin_combo_value(getattr(self, '_inspection_pass_pin_combo', None)))}",
+            f"FAIL={inspection_pin_display(board_id, self._inspection_pin_combo_value(getattr(self, '_inspection_fail_pin_combo', None)))}",
+            f"FAULT={inspection_pin_display(board_id, self._inspection_pin_combo_value(getattr(self, '_inspection_fault_pin_combo', None)))}",
+            f"BUSY={inspection_pin_display(board_id, self._inspection_pin_combo_value(getattr(self, '_inspection_busy_pin_combo', None)))}",
+        ]
+        parts.append(
+            "Capture="
+            f"{int(getattr(self, '_inspection_camera_width_spin', None).value() if getattr(self, '_inspection_camera_width_spin', None) else 1920)}x"
+            f"{int(getattr(self, '_inspection_camera_height_spin', None).value() if getattr(self, '_inspection_camera_height_spin', None) else 1080)} @ "
+            f"{int(getattr(self, '_inspection_camera_fps_spin', None).value() if getattr(self, '_inspection_camera_fps_spin', None) else 30)} fps"
+        )
+        trig_mode = (getattr(self, "_inspection_trigger_mode_combo", None) and self._inspection_trigger_mode_combo.currentText()) or "Manual trigger"
+        trig_pin = inspection_pin_display(board_id, self._inspection_pin_combo_value(getattr(self, "_inspection_trigger_pin_combo", None)))
+        parts.append(f"Trigger={trig_mode} ({trig_pin})")
+        lbl.setText(" | ".join(parts))
+
+    def _refresh_inspection_pin_combos(self, selected=None):
+        if getattr(self, "_inspection_ui_loading", False):
+            return
+        board_id = (getattr(self, "_inspection_board_combo", None) and self._inspection_board_combo.currentData()) or ""
+        selected = selected or {}
+        self._populate_inspection_pin_combo(getattr(self, "_inspection_pass_pin_combo", None), board_id, selected.get("pass_pin"), "Disabled")
+        self._populate_inspection_pin_combo(getattr(self, "_inspection_fail_pin_combo", None), board_id, selected.get("fail_pin"), "Disabled")
+        self._populate_inspection_pin_combo(getattr(self, "_inspection_fault_pin_combo", None), board_id, selected.get("fault_pin"), "Disabled")
+        self._populate_inspection_pin_combo(getattr(self, "_inspection_busy_pin_combo", None), board_id, selected.get("busy_pin"), "Disabled")
+        self._populate_inspection_pin_combo(getattr(self, "_inspection_trigger_pin_combo", None), board_id, selected.get("trigger_pin"), "Disabled")
+
+    def _sync_inspection_profile_ui(self):
+        if not hasattr(self, "_inspection_camera_name_input"):
+            return
+        profile = load_inspection_profile()
+        runtime_cfg = profile.get("runtime") or {}
+        runtime_host = normalize_runtime_host(runtime_cfg.get("host") or "")
+        if not runtime_host:
+            runtime_host = (getattr(self, "node_ip", None) and self.node_ip.text().strip()) or "127.0.0.1"
+        state = normalize_loaded_profile(profile, runtime_host, csi_sensor_default_focuser)
+        self._inspection_ui_loading = True
+        try:
+            self._inspection_camera_name_input.setText(state["camera_name"])
+            board_id = state["board_model"]
+            if getattr(self, "_inspection_board_combo", None):
+                idx = 0
+                for i in range(self._inspection_board_combo.count()):
+                    if self._inspection_board_combo.itemData(i) == board_id:
+                        idx = i
+                        break
+                self._inspection_board_combo.setCurrentIndex(idx)
+            backend = state["output_backend"]
+            if getattr(self, "_inspection_backend_combo", None):
+                idx = 0
+                for i in range(self._inspection_backend_combo.count()):
+                    if self._inspection_backend_combo.itemData(i) == backend:
+                        idx = i
+                        break
+                self._inspection_backend_combo.setCurrentIndex(idx)
+            trigger_mode = state["trigger_mode"]
+            if getattr(self, "_inspection_trigger_mode_combo", None):
+                idx = 0
+                for i in range(self._inspection_trigger_mode_combo.count()):
+                    if self._inspection_trigger_mode_combo.itemData(i) == trigger_mode:
+                        idx = i
+                        break
+                self._inspection_trigger_mode_combo.setCurrentIndex(idx)
+            gpio_cfg = state["gpio"]
+            if getattr(self, "_inspection_gpio_enable_switch", None):
+                self._inspection_gpio_enable_switch.setChecked(bool(gpio_cfg.get("enabled")))
+            active_level = gpio_cfg.get("active_level") or "high"
+            if getattr(self, "_inspection_active_level_combo", None):
+                idx = 0
+                for i in range(self._inspection_active_level_combo.count()):
+                    if self._inspection_active_level_combo.itemData(i) == active_level:
+                        idx = i
+                        break
+                self._inspection_active_level_combo.setCurrentIndex(idx)
+            if getattr(self, "_inspection_runtime_host_input", None):
+                self._inspection_runtime_host_input.setText(state["runtime_host"])
+            if getattr(self, "_inspection_runtime_port_spin", None):
+                self._inspection_runtime_port_spin.setValue(int(state["runtime_port"]))
+            camera_cfg = state["camera"]
+            if getattr(self, "_inspection_camera_backend_combo", None):
+                idx = 0
+                for i in range(self._inspection_camera_backend_combo.count()):
+                    if self._inspection_camera_backend_combo.itemData(i) == camera_cfg["backend"]:
+                        idx = i
+                        break
+                self._inspection_camera_backend_combo.setCurrentIndex(idx)
+            if getattr(self, "_inspection_camera_model_combo", None):
+                idx = 0
+                wanted_model = str(camera_cfg["sensor_model"]).strip().upper()
+                for i in range(self._inspection_camera_model_combo.count()):
+                    if self._inspection_camera_model_combo.itemData(i) == wanted_model:
+                        idx = i
+                        break
+                self._inspection_camera_model_combo.setCurrentIndex(idx)
+            if getattr(self, "_inspection_camera_focuser_combo", None):
+                idx = 0
+                wanted_focuser = str(camera_cfg["focuser_type"]).strip().lower()
+                for i in range(self._inspection_camera_focuser_combo.count()):
+                    if self._inspection_camera_focuser_combo.itemData(i) == wanted_focuser:
+                        idx = i
+                        break
+                self._inspection_camera_focuser_combo.setCurrentIndex(idx)
+            if getattr(self, "_inspection_camera_sensor_spin", None):
+                self._inspection_camera_sensor_spin.setValue(int(camera_cfg["sensor_id"]))
+            if getattr(self, "_inspection_camera_device_spin", None):
+                self._inspection_camera_device_spin.setValue(int(camera_cfg["device_index"]))
+            if getattr(self, "_inspection_camera_width_spin", None):
+                self._inspection_camera_width_spin.setValue(int(camera_cfg["capture_width"]))
+            if getattr(self, "_inspection_camera_height_spin", None):
+                self._inspection_camera_height_spin.setValue(int(camera_cfg["capture_height"]))
+            if getattr(self, "_inspection_camera_fps_spin", None):
+                self._inspection_camera_fps_spin.setValue(int(camera_cfg["framerate"]))
+            if getattr(self, "_inspection_camera_burst_spin", None):
+                self._inspection_camera_burst_spin.setValue(int(state["inspection"]["frame_vote_count"]))
+            if getattr(self, "_inspection_camera_source_input", None):
+                self._inspection_camera_source_input.setText(str(camera_cfg["source_path"]))
+            inspection_cfg = state["inspection"]
+            if getattr(self, "_inspection_profile_name_input", None):
+                self._inspection_profile_name_input.setText(str(inspection_cfg["profile_name"]))
+            if getattr(self, "_inspection_recipe_name_input", None):
+                self._inspection_recipe_name_input.setText(str(inspection_cfg["recipe_name"]))
+            if getattr(self, "_inspection_product_label_input", None):
+                self._inspection_product_label_input.setText(str(inspection_cfg["product_label"]))
+            if getattr(self, "_inspection_expected_label_input", None):
+                self._inspection_expected_label_input.setText(str(inspection_cfg["expected_object_label"]))
+            if getattr(self, "_inspection_pass_display_input", None):
+                self._inspection_pass_display_input.setText(str(inspection_cfg["pass_display_label"]))
+            if getattr(self, "_inspection_fail_display_input", None):
+                self._inspection_fail_display_input.setText(str(inspection_cfg["fail_display_label"]))
+            if getattr(self, "_inspection_defect_catalog_input", None):
+                defect_catalog = inspection_cfg["defect_catalog"]
+                self._inspection_defect_catalog_input.setText(", ".join(str(x) for x in defect_catalog if str(x).strip()))
+            if getattr(self, "_inspection_pass_threshold_spin", None):
+                self._inspection_pass_threshold_spin.setValue(float(inspection_cfg["pass_threshold"]))
+            if getattr(self, "_inspection_fail_threshold_spin", None):
+                self._inspection_fail_threshold_spin.setValue(float(inspection_cfg["fail_threshold"]))
+            if getattr(self, "_inspection_hard_fail_threshold_spin", None):
+                self._inspection_hard_fail_threshold_spin.setValue(float(inspection_cfg["hard_fail_threshold"]))
+            roi_cfg = inspection_cfg["roi"]
+            if getattr(self, "_inspection_roi_enable_switch", None):
+                self._inspection_roi_enable_switch.setChecked(bool(roi_cfg.get("enabled")))
+            if getattr(self, "_inspection_roi_x_spin", None):
+                self._inspection_roi_x_spin.setValue(float(roi_cfg.get("x") or 0.0))
+            if getattr(self, "_inspection_roi_y_spin", None):
+                self._inspection_roi_y_spin.setValue(float(roi_cfg.get("y") or 0.0))
+            if getattr(self, "_inspection_roi_w_spin", None):
+                self._inspection_roi_w_spin.setValue(float(roi_cfg.get("width") or 1.0))
+            if getattr(self, "_inspection_roi_h_spin", None):
+                self._inspection_roi_h_spin.setValue(float(roi_cfg.get("height") or 1.0))
+            if getattr(self, "_inspection_save_fail_switch", None):
+                self._inspection_save_fail_switch.setChecked(bool(inspection_cfg.get("save_fail_frames", True)))
+            if getattr(self, "_inspection_save_uncertain_switch", None):
+                self._inspection_save_uncertain_switch.setChecked(bool(inspection_cfg.get("save_uncertain_frames", True)))
+            self._inspection_ui_loading = False
+            self._refresh_inspection_pin_combos(gpio_cfg)
+            self._refresh_inspection_pin_summary()
+            self._refresh_inspection_camera_profile_hint()
+            self._refresh_sock_detection_profile_hint()
+            self._apply_camera_commissioning_constraints()
+            self._refresh_settings_hub()
+        finally:
+            self._inspection_ui_loading = False
+
+    def _save_inspection_profile_from_ui(self):
+        if getattr(self, "_inspection_ui_loading", False):
+            return
+        if not hasattr(self, "_inspection_camera_name_input"):
+            return
+        profile = load_inspection_profile()
+        ui = {
+            "camera_name": (self._inspection_camera_name_input.text() or "").strip(),
+            "board_model": (self._inspection_board_combo.currentData() or "JETSON_ORIN_NANO") if getattr(self, "_inspection_board_combo", None) else "JETSON_ORIN_NANO",
+            "output_backend": (self._inspection_backend_combo.currentData() or "mock") if getattr(self, "_inspection_backend_combo", None) else "mock",
+            "trigger_mode": (self._inspection_trigger_mode_combo.currentData() or "manual") if getattr(self, "_inspection_trigger_mode_combo", None) else "manual",
+            "runtime_port": int(self._inspection_runtime_port_spin.value()) if getattr(self, "_inspection_runtime_port_spin", None) else 8787,
+            "runtime_host": normalize_runtime_host(getattr(self, "_inspection_runtime_host_input", None) and self._inspection_runtime_host_input.text()) or "127.0.0.1",
+            "camera_backend": (self._inspection_camera_backend_combo.currentData() or "mock_frame") if getattr(self, "_inspection_camera_backend_combo", None) else "mock_frame",
+            "sensor_model": (self._inspection_camera_model_combo.currentData() or "GENERIC_CSI") if getattr(self, "_inspection_camera_model_combo", None) else "GENERIC_CSI",
+            "focuser_type": (self._inspection_camera_focuser_combo.currentData() or "") if getattr(self, "_inspection_camera_focuser_combo", None) else "",
+            "sensor_id": int(self._inspection_camera_sensor_spin.value()) if getattr(self, "_inspection_camera_sensor_spin", None) else 0,
+            "device_index": int(self._inspection_camera_device_spin.value()) if getattr(self, "_inspection_camera_device_spin", None) else 0,
+            "capture_width": int(self._inspection_camera_width_spin.value()) if getattr(self, "_inspection_camera_width_spin", None) else 1920,
+            "capture_height": int(self._inspection_camera_height_spin.value()) if getattr(self, "_inspection_camera_height_spin", None) else 1080,
+            "framerate": int(self._inspection_camera_fps_spin.value()) if getattr(self, "_inspection_camera_fps_spin", None) else 30,
+            "burst_count": int(self._inspection_camera_burst_spin.value()) if getattr(self, "_inspection_camera_burst_spin", None) else 3,
+            "source_path": (self._inspection_camera_source_input.text() or "").strip() if getattr(self, "_inspection_camera_source_input", None) else "",
+            "profile_name": (self._inspection_profile_name_input.text() or "").strip() if getattr(self, "_inspection_profile_name_input", None) else "",
+            "recipe_name": (self._inspection_recipe_name_input.text() or "").strip() if getattr(self, "_inspection_recipe_name_input", None) else "",
+            "product_label": (self._inspection_product_label_input.text() or "").strip() if getattr(self, "_inspection_product_label_input", None) else "",
+            "expected_object_label": (self._inspection_expected_label_input.text() or "").strip() if getattr(self, "_inspection_expected_label_input", None) else "",
+            "pass_display_label": (self._inspection_pass_display_input.text() or "").strip() if getattr(self, "_inspection_pass_display_input", None) else "",
+            "fail_display_label": (self._inspection_fail_display_input.text() or "").strip() if getattr(self, "_inspection_fail_display_input", None) else "",
+            "defect_catalog": (self._inspection_defect_catalog_input.text() or "").strip() if getattr(self, "_inspection_defect_catalog_input", None) else "",
+            "pass_threshold": float(self._inspection_pass_threshold_spin.value()) if getattr(self, "_inspection_pass_threshold_spin", None) else 0.35,
+            "fail_threshold": float(self._inspection_fail_threshold_spin.value()) if getattr(self, "_inspection_fail_threshold_spin", None) else 0.65,
+            "hard_fail_threshold": float(self._inspection_hard_fail_threshold_spin.value()) if getattr(self, "_inspection_hard_fail_threshold_spin", None) else 0.9,
+            "save_fail_frames": bool(getattr(self, "_inspection_save_fail_switch", None) and self._inspection_save_fail_switch.isChecked()),
+            "save_uncertain_frames": bool(getattr(self, "_inspection_save_uncertain_switch", None) and self._inspection_save_uncertain_switch.isChecked()),
+            "roi_enabled": bool(getattr(self, "_inspection_roi_enable_switch", None) and self._inspection_roi_enable_switch.isChecked()),
+            "roi_x": float(self._inspection_roi_x_spin.value()) if getattr(self, "_inspection_roi_x_spin", None) else 0.0,
+            "roi_y": float(self._inspection_roi_y_spin.value()) if getattr(self, "_inspection_roi_y_spin", None) else 0.0,
+            "roi_width": float(self._inspection_roi_w_spin.value()) if getattr(self, "_inspection_roi_w_spin", None) else 1.0,
+            "roi_height": float(self._inspection_roi_h_spin.value()) if getattr(self, "_inspection_roi_h_spin", None) else 1.0,
+            "gpio_enabled": bool(getattr(self, "_inspection_gpio_enable_switch", None) and self._inspection_gpio_enable_switch.isChecked()),
+            "gpio_active_level": (self._inspection_active_level_combo.currentData() or "high") if getattr(self, "_inspection_active_level_combo", None) else "high",
+            "pass_pin": self._inspection_pin_combo_value(getattr(self, "_inspection_pass_pin_combo", None)),
+            "fail_pin": self._inspection_pin_combo_value(getattr(self, "_inspection_fail_pin_combo", None)),
+            "fault_pin": self._inspection_pin_combo_value(getattr(self, "_inspection_fault_pin_combo", None)),
+            "busy_pin": self._inspection_pin_combo_value(getattr(self, "_inspection_busy_pin_combo", None)),
+            "trigger_pin": self._inspection_pin_combo_value(getattr(self, "_inspection_trigger_pin_combo", None)),
+        }
+        profile = build_profile_from_ui(
+            profile,
+            ui,
+            csi_sensor_default_focuser,
+            csi_sensor_label,
+        )
+        profile, warnings = validate_profile(profile)
+        save_inspection_profile(profile)
+        if warnings:
+            if _env_truthy("VISIONDOCK_NOTIFY_PROFILE_SANITIZE"):
+                self.notify_warning(t("notif.profile_autofix_warning", "Profile settings auto-corrected. Save completed safely."))
+            elif not _env_truthy("VISIONDOCK_SILENT_PROFILE_SANITIZE"):
+                self.notify_info(t("notif.profile_autofix_info", "Profile settings auto-corrected."))
+        self._refresh_inspection_pin_summary()
+        self._refresh_inspection_camera_profile_hint()
+        self._refresh_sock_detection_profile_hint()
+        self._refresh_settings_hub()
+        if hasattr(self, "_update_camera_runtime_widgets") and hasattr(self, "_camera_runtime_status_badge"):
+            try:
+                if getattr(self, "_inspection_runtime_online", None) is False:
+                    self._update_camera_runtime_widgets(error=getattr(self, "_inspection_runtime_last_error", "") or "Runtime unreachable.")
+                else:
+                    self._update_camera_runtime_widgets(state=getattr(self, "_inspection_runtime_state", {}) or None)
+            except Exception:
+                pass
+
+    def _on_inspection_board_changed(self, _index):
+        if getattr(self, "_inspection_ui_loading", False):
+            return
+        prev = load_inspection_profile().get("gpio") or {}
+        self._refresh_inspection_pin_combos(prev)
+        self._save_inspection_profile_from_ui()
 
     def _apply_v4l2_exposure_gain(self):
         if not (getattr(self, "camera_aelock_switch", None) and self.camera_aelock_switch.isChecked()):
@@ -5917,21 +6374,31 @@ class App(QMainWindow):
         except Exception:
             pass
 
-    def _apply_focus_imx519(self):
+    def _apply_focus_csi_camera(self):
         """Fixed/Manual: apply slider position via I2C. Auto: run autofocus script with confirmation."""
         d = get_camera_defaults()
         mode = d.get("focus_mode", "fixed")
         pos = int(d.get("focus_position", 512))
         bus = int(d.get("i2c_bus", 10))
         sensor_id = int(d.get("sensor_id", 0))
+        focuser_type = str(d.get("focuser_type") or csi_sensor_default_focuser(d.get("sensor_model"))).strip().lower()
+        if not focuser_available(focuser_type):
+            QMessageBox.information(
+                self,
+                "Focus",
+                "The selected CSI configuration is set to fixed lens. Change Focus actuator to a motorized focuser only if your exact module supports it.",
+            )
+            return
+        scripts = focus_scripts_for_focuser(focuser_type)
         base = os.path.dirname(os.path.dirname(__file__))
         if mode == "auto":
-            autofocus_script = os.path.join(base, "scripts", "autofocus_imx519.py")
-            if not os.path.exists(autofocus_script):
+            autofocus_name = scripts.get("autofocus") or ""
+            autofocus_script = os.path.join(base, "scripts", autofocus_name) if autofocus_name else ""
+            if not autofocus_name or not os.path.exists(autofocus_script):
                 QMessageBox.information(
                     self,
                     "Focus",
-                    "Autofocus script scripts/autofocus_imx519.py not found. Use Manual mode or see docs/CSI_CAMERA_FOCUS.md.",
+                    "Autofocus script for the selected focuser was not found. Use Manual mode or see docs/CSI_CAMERA_FOCUS.md.",
                 )
                 return
             ans = QMessageBox.question(
@@ -5961,9 +6428,10 @@ class App(QMainWindow):
             else:
                 QMessageBox.warning(self, "Focus", "Autofocus failed.\n\n" + (msg or "Unknown error"))
             return
-        script_path = os.path.join(base, "scripts", "focus_imx519.py")
-        if not os.path.exists(script_path):
-            QMessageBox.information(self, "Focus", "Script scripts/focus_imx519.py not found. See docs/CSI_CAMERA_FOCUS.md.")
+        focus_name = scripts.get("focus") or ""
+        script_path = os.path.join(base, "scripts", focus_name) if focus_name else ""
+        if not focus_name or not os.path.exists(script_path):
+            QMessageBox.information(self, "Focus", "Focus script for the selected focuser was not found. See docs/CSI_CAMERA_FOCUS.md.")
             return
         ok, msg = _run_script_checked(
             [sys.executable, script_path, "--bus", str(bus), "--position", str(pos)],
@@ -6056,18 +6524,768 @@ class App(QMainWindow):
         for i in range(self.df.count()):
             w = self.df.itemAt(i).widget()
             if isinstance(w, ResizableCard): w.setVisible(t.lower() in w.title_text.lower())
+
+    def _set_combo_items(self, combo, items, empty_label="Select...", empty_data=""):
+        if combo is None:
+            return
+        current = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(empty_label, empty_data)
+        for label, data in items:
+            combo.addItem(label, data)
+        idx = 0
+        for i in range(combo.count()):
+            if combo.itemData(i) == current:
+                idx = i
+                break
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _package_version_suggestion(self):
+        return "v" + datetime.now().strftime("%Y.%m.%d.%H%M")
+
+    def _runtime_target_host(self):
+        profile = load_inspection_profile()
+        runtime_cfg = profile.get("runtime") or {}
+        host = normalize_runtime_host(runtime_cfg.get("host") or "")
+        if not host:
+            host = (getattr(self, "node_ip", None) and self.node_ip.text().strip()) or "127.0.0.1"
+        return host or "127.0.0.1"
+
+    def _runtime_target_port(self):
+        profile = load_inspection_profile()
+        runtime_cfg = profile.get("runtime") or {}
+        try:
+            return int(runtime_cfg.get("port") or 8787)
+        except (TypeError, ValueError):
+            return 8787
+
+    def _runtime_is_local(self):
+        host = self._runtime_target_host().lower()
+        return host in ("127.0.0.1", "localhost", "::1") or host == platform.node().lower()
+
+    def _apply_runtime_host_selection(self, host: str):
+        target = normalize_runtime_host(host)
+        if not target:
+            self.notify_warning("No runtime host selected.")
+            return
+        if getattr(self, "_inspection_runtime_host_input", None):
+            self._inspection_runtime_host_input.setText(target)
+        if getattr(self, "node_ip", None):
+            self.node_ip.setText(target)
+        save_app_prefs_remote_host(target)
+        DockerManager.set_host(target)
+        self._save_inspection_profile_from_ui()
+        self.notify_success(f"Runtime host selected: {target}")
+        self._refresh_workspace_package_panel()
+        self._refresh_camera_runtime_card(force=True)
+
+    def _local_workspace_rows(self):
+        rows = []
+        if not hasattr(self, "db"):
+            return rows
+        for name, img, cid, host in self.db.get_workspaces():
+            if (host or "").strip():
+                continue
+            ws_dir = workspace_dir_for_name(name)
+            rows.append({
+                "name": name,
+                "image": img,
+                "cid": (cid or "")[:12],
+                "host": host or "",
+                "workspace_dir": ws_dir,
+                "exists": os.path.isdir(ws_dir),
+            })
+        return rows
+
+    def _selected_workspace_export_record(self):
+        target_name = (getattr(self, "_workspace_export_workspace_combo", None) and self._workspace_export_workspace_combo.currentData()) or ""
+        for row in self._local_workspace_rows():
+            if row["name"] == target_name:
+                return row
+        return None
+
+    def _refresh_workspace_export_candidates(self):
+        record = self._selected_workspace_export_record()
+        scan = {"model_artifacts": [], "label_files": [], "recipe_files": [], "runtime_files": []}
+        if record and record.get("exists"):
+            scan = scan_workspace_candidates(record["workspace_dir"])
+        self._workspace_export_scan = scan
+
+        def _pairs(values):
+            return [(v, v) for v in values]
+
+        self._set_combo_items(getattr(self, "_workspace_export_model_combo", None), _pairs(scan.get("model_artifacts", [])), "Select model artifact", "")
+        self._set_combo_items(getattr(self, "_workspace_export_labels_combo", None), _pairs(scan.get("label_files", [])), "No labels file", "")
+        self._set_combo_items(getattr(self, "_workspace_export_recipe_combo", None), _pairs(scan.get("recipe_files", [])), "No recipe file", "")
+        self._set_combo_items(getattr(self, "_workspace_export_runtime_combo", None), _pairs(scan.get("runtime_files", [])), "No runtime config", "")
+        if getattr(self, "_workspace_export_model_combo", None) and self._workspace_export_model_combo.count() > 1 and not self._workspace_export_model_combo.currentData():
+            self._workspace_export_model_combo.setCurrentIndex(1)
+
+        if getattr(self, "_workspace_export_name_input", None) and record:
+            if not self._workspace_export_name_input.text().strip():
+                self._workspace_export_name_input.setText(str(record["name"]).replace("_", "-"))
+        if getattr(self, "_workspace_export_version_input", None) and not self._workspace_export_version_input.text().strip():
+            self._workspace_export_version_input.setText(self._package_version_suggestion())
+
+    def _refresh_workspace_package_panel(self):
+        local_workspaces = self._local_workspace_rows()
+        workspace_items = []
+        for row in local_workspaces:
+            suffix = "" if row.get("exists") else " (missing folder)"
+            workspace_items.append((f"{pretty_workspace_title(row['name'])}{suffix}", row["name"]))
+        self._set_combo_items(
+            getattr(self, "_workspace_export_workspace_combo", None),
+            workspace_items,
+            "Select local workspace",
+            "",
+        )
+        if getattr(self, "_workspace_export_workspace_combo", None) and self._workspace_export_workspace_combo.count() > 1 and not self._workspace_export_workspace_combo.currentData():
+            self._workspace_export_workspace_combo.setCurrentIndex(1)
+        self._refresh_workspace_export_candidates()
+
+        local_packages = list_local_model_packages()
+        self._workspace_local_packages_cache = {str(pkg.get("package_id")): pkg for pkg in local_packages}
+        local_items = [
+            (
+                f"{pkg.get('package_name') or pkg.get('package_id')} · {pkg.get('version') or 'unassigned'}",
+                pkg.get("package_id"),
+            )
+            for pkg in local_packages
+        ]
+        self._set_combo_items(getattr(self, "_workspace_local_package_combo", None), local_items, "Select exported package", "")
+
+        runtime_desc = f"Runtime endpoint: {self._runtime_target_host()}:{self._runtime_target_port()}"
+        if hasattr(self, "_workspace_package_runtime_label"):
+            self._workspace_package_runtime_label.setText(runtime_desc)
+        self._refresh_runtime_package_inventory()
+
+    def _refresh_runtime_package_inventory(self):
+        if getattr(self, "_workspace_runtime_inventory_thread", None) and self._workspace_runtime_inventory_thread.isRunning():
+            return
+        self._workspace_runtime_inventory_thread = InspectionRuntimeRequestThread(
+            self._inspection_runtime_url("/models"),
+            method="GET",
+            timeout=4.0,
+        )
+        self._workspace_runtime_inventory_thread.result_signal.connect(self._on_runtime_package_inventory_result)
+        self._workspace_runtime_inventory_thread.error_signal.connect(self._on_runtime_package_inventory_error)
+        self._workspace_runtime_inventory_thread.start()
+
+    def _apply_runtime_package_inventory(self, packages=None, active_package=None, previous_package=None, error=""):
+        packages = packages or []
+        self._workspace_runtime_packages_cache = {
+            str(pkg.get("package_id")): pkg for pkg in packages if isinstance(pkg, dict)
+        }
+        runtime_items = [
+            (
+                f"{pkg.get('package_name') or pkg.get('package_id')} · {pkg.get('version') or 'unassigned'}",
+                pkg.get("package_id"),
+            )
+            for pkg in packages
+        ]
+        self._set_combo_items(getattr(self, "_workspace_runtime_package_combo", None), runtime_items, "Select runtime package", "")
+
+        active = active_package if isinstance(active_package, dict) else None
+        if active:
+            text = f"{active.get('package_name') or active.get('package_id')}\n{active.get('version') or 'unassigned'}"
+            if hasattr(self, "_workspace_package_active_label"): self._set_runtime_badge(self._workspace_package_active_label, text, "success")
+        else:
+            tone = "danger" if error else "neutral"
+            label = "NO ACTIVE PACKAGE" if not error else "RUNTIME OFFLINE"
+            if hasattr(self, "_workspace_package_active_label"): self._set_runtime_badge(self._workspace_package_active_label, label, tone)
+
+        local_count = len(getattr(self, "_workspace_local_packages_cache", {}) or {})
+        runtime_count = len(self._workspace_runtime_packages_cache)
+        if hasattr(self, "_workspace_package_inventory_label"):
+            self._workspace_package_inventory_label.setText(f"Packages: {local_count} local / {runtime_count} runtime")
+        if hasattr(self, "_workspace_package_status"):
+            if error:
+                self._workspace_package_status.setText(f"Runtime package inventory unavailable: {error}")
+            elif active:
+                prev_txt = ""
+                if isinstance(previous_package, dict) and previous_package.get("package_id"):
+                    prev_txt = f" Previous: {previous_package.get('package_name') or previous_package.get('package_id')}."
+                self._workspace_package_status.setText(
+                    f"Active runtime package: {active.get('package_name') or active.get('package_id')} "
+                    f"{active.get('version') or 'unassigned'}.{prev_txt}"
+                )
+            else:
+                self._workspace_package_status.setText("Runtime has no active package yet. Export and activate one from a workspace.")
+
+    def _on_runtime_package_inventory_result(self, payload):
+        packages = payload.get("packages") if isinstance(payload.get("packages"), list) else []
+        active_package = payload.get("active_package")
+        previous_package = payload.get("previous_package")
+        self._apply_runtime_package_inventory(packages, active_package, previous_package, error="")
+
+    def _on_runtime_package_inventory_error(self, message):
+        if self._runtime_is_local():
+            active_package = get_local_active_model_package()
+            self._apply_runtime_package_inventory(
+                list_local_model_packages(),
+                active_package,
+                None,
+                error="",
+            )
+            if hasattr(self, "_workspace_package_status"):
+                self._workspace_package_status.setText(
+                    "Runtime inventory request failed; showing local package registry instead. Start the runtime to sync live state."
+                )
+            return
+        self._apply_runtime_package_inventory([], None, None, error=str(message or "Unknown error"))
+
+    def _selected_local_package(self):
+        package_id = (getattr(self, "_workspace_local_package_combo", None) and self._workspace_local_package_combo.currentData()) or ""
+        return self._workspace_local_packages_cache.get(str(package_id or ""))
+
+    def _selected_runtime_package_id(self):
+        package_id = (getattr(self, "_workspace_runtime_package_combo", None) and self._workspace_runtime_package_combo.currentData()) or ""
+        if package_id:
+            return str(package_id)
+        local_pkg = self._selected_local_package()
+        return str(local_pkg.get("package_id")) if isinstance(local_pkg, dict) else ""
+
+    def _export_selected_workspace_package(self):
+        record = self._selected_workspace_export_record()
+        if not record:
+            self.notify_warning("Select a local workspace to export.")
+            return
+        if not record.get("exists"):
+            self.notify_error("Selected workspace folder does not exist on disk.")
+            return
+        artifact_rel = (getattr(self, "_workspace_export_model_combo", None) and self._workspace_export_model_combo.currentData()) or ""
+        if not artifact_rel:
+            self.notify_warning("Select a model artifact from the workspace.")
+            return
+        package_name = (getattr(self, "_workspace_export_name_input", None) and self._workspace_export_name_input.text()) or record["name"]
+        version = (getattr(self, "_workspace_export_version_input", None) and self._workspace_export_version_input.text()) or ""
+        try:
+            metadata = build_package_from_workspace(
+                workspace_name=record["name"],
+                workspace_dir=record["workspace_dir"],
+                version=version.strip(),
+                artifact_relpath=str(artifact_rel),
+                package_name=(package_name or record["name"]).strip(),
+                label_relpath=(getattr(self, "_workspace_export_labels_combo", None) and self._workspace_export_labels_combo.currentData()) or None,
+                recipe_relpath=(getattr(self, "_workspace_export_recipe_combo", None) and self._workspace_export_recipe_combo.currentData()) or None,
+                runtime_relpath=(getattr(self, "_workspace_export_runtime_combo", None) and self._workspace_export_runtime_combo.currentData()) or None,
+                source_image=record.get("image"),
+                container_id=record.get("cid"),
+            )
+        except Exception as exc:
+            self.notify_error(f"Package export failed: {exc}")
+            return
+        self.notify_success(f"Package exported: {metadata.get('package_id')}")
+        if getattr(self, "_workspace_export_version_input", None):
+            self._workspace_export_version_input.setText(self._package_version_suggestion())
+        self._refresh_workspace_package_panel()
+        package_id = metadata.get("package_id")
+        if package_id and getattr(self, "_workspace_local_package_combo", None):
+            for i in range(self._workspace_local_package_combo.count()):
+                if self._workspace_local_package_combo.itemData(i) == package_id:
+                    self._workspace_local_package_combo.setCurrentIndex(i)
+                    break
+
+    def _find_runtime_ssh_transport(self):
+        host = self._runtime_target_host()
+        norm_host = normalize_runtime_host(host)
+        if not norm_host or self._runtime_is_local():
+            return {"mode": "local", "host": norm_host}
+        for key, client in getattr(self, "_ssh_sessions", {}).items():
+            session_host = key[0] if isinstance(key, tuple) else ""
+            session_user = key[1] if isinstance(key, tuple) and len(key) > 1 else "jetson"
+            if normalize_runtime_host(session_host) == norm_host:
+                return {"mode": "session", "host": norm_host, "user": session_user, "client": client}
+            try:
+                zt_ips = ssh_get_zerotier_ips(client)
+            except Exception:
+                zt_ips = []
+            if norm_host in [normalize_runtime_host(ip) for ip in zt_ips]:
+                return {"mode": "session", "host": norm_host, "user": session_user, "client": client}
+        if hasattr(self, "db"):
+            key_rows = []
+            for _name, dev_host, dev_user, key_path in self.db.get_devices():
+                if normalize_runtime_host(dev_host) == norm_host:
+                    return {
+                        "mode": "key" if key_path and os.path.exists(os.path.expanduser(key_path)) else "saved",
+                        "host": norm_host,
+                        "user": dev_user or "jetson",
+                        "key_path": os.path.expanduser(key_path) if key_path else "",
+                    }
+                if key_path and os.path.exists(os.path.expanduser(key_path)):
+                    key_rows.append((dev_user or "jetson", os.path.expanduser(key_path)))
+            if len(key_rows) == 1:
+                user, key_path = key_rows[0]
+                return {"mode": "key", "host": norm_host, "user": user, "key_path": key_path}
+        return {"mode": "missing", "host": norm_host}
+
+    def _deploy_selected_package_to_runtime(self):
+        package = self._selected_local_package()
+        if not package:
+            self.notify_warning("Select an exported local package first.")
+            return
+        if self._runtime_is_local():
+            self.notify_success("Local runtime uses exported packages directly. Deploy step is not required.")
+            self._refresh_runtime_package_inventory()
+            return
+
+        package_dir = str(package.get("package_dir") or "").strip()
+        package_id = str(package.get("package_id") or "").strip()
+        if not package_dir or not os.path.isdir(package_dir):
+            self.notify_error("Selected package directory is missing.")
+            return
+
+        transport = self._find_runtime_ssh_transport()
+        remote_root = ".visiondock/model_packages"
+        remote_package_dir = posixpath.join(remote_root, package_id)
+        try:
+            if transport.get("mode") == "session":
+                client = transport["client"]
+                ssh_exec_text(client, "mkdir -p ~/.visiondock/model_packages", timeout=20)
+                sftp_upload_tree(client, package_dir, remote_package_dir)
+            elif transport.get("mode") == "key":
+                host = transport["host"]
+                user = transport.get("user") or "jetson"
+                key_path = transport.get("key_path") or ""
+                subprocess.run(
+                    ["ssh", "-i", key_path, f"{user}@{host}", "mkdir -p ~/.visiondock/model_packages"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                subprocess.run(
+                    ["scp", "-r", "-i", key_path, package_dir, f"{user}@{host}:~/.visiondock/model_packages/"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            else:
+                self.notify_error(
+                    "Remote deploy requires either an active SSH session from Devices or a saved SSH key for the runtime host."
+                )
+                return
+        except Exception as exc:
+            self.notify_error(f"Package deploy failed: {exc}")
+            return
+
+        self.notify_success(f"Package deployed to runtime host: {package_id}")
+        self._refresh_runtime_package_inventory()
+
+    def _set_workspace_package_action_busy(self, kind, busy):
+        mapping = {
+            "activate": (getattr(self, "_workspace_activate_btn", None), "Activate Package", "Activating…"),
+            "rollback": (getattr(self, "_workspace_rollback_btn", None), "Rollback", "Rolling back…"),
+        }
+        btn, idle_txt, busy_txt = mapping.get(kind, (None, "", ""))
+        if btn is not None:
+            btn.setEnabled(not busy)
+            btn.setText(busy_txt if busy else idle_txt)
+
+    def _start_workspace_package_runtime_action(self, kind, path, payload=None):
+        if getattr(self, "_workspace_package_action_thread", None) and self._workspace_package_action_thread.isRunning():
+            return False
+        self._set_workspace_package_action_busy(kind, True)
+        self._workspace_package_action_thread = InspectionRuntimeRequestThread(
+            self._inspection_runtime_url(path),
+            method="POST",
+            payload=payload or {},
+            timeout=5.0,
+        )
+        self._workspace_package_action_thread.result_signal.connect(lambda data, k=kind: self._on_workspace_package_action_result(k, data))
+        self._workspace_package_action_thread.error_signal.connect(lambda msg, k=kind: self._on_workspace_package_action_error(k, msg))
+        self._workspace_package_action_thread.start()
+        return True
+
+    def _activate_selected_runtime_package(self):
+        package_id = self._selected_runtime_package_id()
+        if not package_id:
+            self.notify_warning("Select a runtime package to activate.")
+            return
+        self._workspace_pending_local_package_id = package_id
+        self._start_workspace_package_runtime_action("activate", "/activate", {"package_id": package_id})
+
+    def _rollback_active_runtime_package(self):
+        self._workspace_pending_local_package_id = ""
+        self._start_workspace_package_runtime_action("rollback", "/rollback", {})
+
+    def _on_workspace_package_action_result(self, kind, payload):
+        self._set_workspace_package_action_busy(kind, False)
+        self._workspace_pending_local_package_id = ""
+        if kind == "activate":
+            package = payload.get("package") if isinstance(payload.get("package"), dict) else {}
+            self.notify_success(f"Runtime package activated: {package.get('package_id') or 'selected package'}")
+        elif kind == "rollback":
+            package = payload.get("package") if isinstance(payload.get("package"), dict) else {}
+            self.notify_success(f"Runtime rolled back to: {package.get('package_id') or 'previous package'}")
+        self._refresh_runtime_package_inventory()
+        self._refresh_camera_runtime_card(force=True)
+
+    def _on_workspace_package_action_error(self, kind, message):
+        self._set_workspace_package_action_busy(kind, False)
+        if self._runtime_is_local():
+            try:
+                if kind == "activate":
+                    package_id = getattr(self, "_workspace_pending_local_package_id", "") or self._selected_runtime_package_id()
+                    activate_local_model_package(package_id)
+                    self.notify_success(f"Package activated in local regis{package_id}")
+                elif kind == "rollback":
+                    package = rollback_local_model_package()
+                    self.notify_success(f"Rolled back in local regis{package.get('package_id')}")
+                self._workspace_pending_local_package_id = ""
+                self._refresh_runtime_package_inventory()
+                self.notify_info("Runtime is offline; activation will be visible after the service reloads.")
+                return
+            except Exception:
+                pass
+        self._workspace_pending_local_package_id = ""
+        self.notify_error(f"Runtime {kind} failed: {message}")
+        self._refresh_runtime_package_inventory()
+
+    def _set_runtime_badge(self, label, text, tone="neutral"):
+        if label is None:
+            return
+        palette = {
+            "success": ("#30D158", "rgba(48, 209, 88, 0.14)", "#30D158"),
+            "warning": ("#FF9F0A", "rgba(255, 159, 10, 0.14)", "#FF9F0A"),
+            "danger": ("#FF453A", "rgba(255, 69, 58, 0.16)", "#FF453A"),
+            "info": ("#3B82F6", "rgba(59, 130, 246, 0.16)", "#3B82F6"),
+            "neutral": ("#A1A1AA", "rgba(161, 161, 170, 0.12)", "#4B5563"),
+        }
+        fg, bg, border = palette.get(tone, palette["neutral"])
+        label.setText(text)
+        label.setStyleSheet(
+            "font-size: 12px; font-weight: 800; "
+            f"color: {fg}; background: {bg}; border: 1px solid {border}; "
+            "border-radius: 12px; padding: 6px 12px;"
+        )
+
+    def _set_runtime_metric_value(self, label, text, tone="default"):
+        if label is None:
+            return
+        pal = ThemeOps.palette(getattr(self, "is_dark", True))
+        colors = {
+            "default": pal["txt"],
+            "success": "#30D158",
+            "warning": "#FF9F0A",
+            "danger": "#FF453A",
+            "info": "#76A8FA" if getattr(self, "is_dark", True) else "#2E6FDE",
+            "muted": pal["sub"],
+        }
+        label.setText(text)
+        if getattr(label, "objectName", lambda: "")() != "RuntimeMetricValue":
+            label.setObjectName("RuntimeMetricValue")
+        label.setStyleSheet(
+            "font-size: 14px; font-weight: 700; border: none; background: transparent; "
+            f"color: {colors.get(tone, colors['default'])};"
+        )
+
+    def _set_status_pill(self, label, text, tone="neutral"):
+        if label is None:
+            return
+        label.setText(text)
+        label.setObjectName("StatusPill")
+        label.setProperty("stateTone", tone)
+        style = label.style()
+        if style is not None:
+            style.unpolish(label)
+            style.polish(label)
+        label.update()
+
+    def _format_runtime_timestamp(self, value):
+        """Format an ISO-8601 timestamp for compact display (shared by camera and results panels)."""
+        raw = str(value or "").strip()
+        if not raw:
+            return "—"
+        try:
+            return datetime.fromisoformat(raw).strftime("%d %b %H:%M:%S")
+        except Exception:
+            return raw.replace("T", " ")
+
+    # Alias used by the Results page (same behaviour, single implementation)
+    _format_result_timestamp = _format_runtime_timestamp
+
+    def _camera_source_kind(self, src):
+        text = str(src or "").strip().lower()
+        if text.startswith("rtsp://"):
+            return "RTSP stream"
+        if text.startswith("http://") or text.startswith("https://"):
+            return "HTTP stream"
+        if text.startswith("tcp://"):
+            return "TCP stream"
+        if text.startswith("docker://"):
+            return "Workspace pipeline"
+        if text.isdigit():
+            return "Local device"
+        return "Camera source"
+
+    def _camera_preview_summary_text(self):
+        try:
+            cameras = self.db.get_cameras() if hasattr(self, "db") else []
+        except Exception:
+            cameras = []
+        if not cameras:
+            return "No camera source configured"
+        first_name, first_src, _ = cameras[0]
+        summary = f"{first_name} · {self._camera_source_kind(first_src)}"
+        if len(cameras) > 1:
+            summary += f" + {len(cameras) - 1} more"
+        return summary
+
+    def _refresh_camera_preview_summary(self):
+        if not hasattr(self, "_camera_runtime_preview_value"):
+            return
+        state_preview = ((getattr(self, "_inspection_runtime_state", None) or {}).get("preview_source") or "").strip()
+        summary = self._camera_preview_summary_text()
+        if state_preview and state_preview.lower() != "not configured":
+            text = f"{state_preview}\nStudio: {summary}"
+        else:
+            text = summary
+        self._set_runtime_metric_value(self._camera_runtime_preview_value, text, "default" if "No camera" not in text else "muted")
+
+    def _inspection_runtime_profile(self):
+        return load_inspection_profile()
+
+    def _inspection_runtime_url(self, path="/state"):
+        profile = self._inspection_runtime_profile()
+        runtime_cfg = profile.get("runtime") or {}
+        host = normalize_runtime_host(runtime_cfg.get("host") or "")
+        if not host:
+            host = (getattr(self, "node_ip", None) and self.node_ip.text().strip()) or "127.0.0.1"
+        host = format_runtime_host_for_url(host or "127.0.0.1")
+        try:
+            port = int(runtime_cfg.get("port") or 8787)
+        except (TypeError, ValueError):
+            port = 8787
+        route = path if str(path or "").startswith("/") else f"/{path}"
+        return f"http://{host}:{port}{route}"
+
+    def _safe_refresh_camera_runtime(self):
+        """Timer callback that is safe to call before the Cameras page is built.
+
+        When called at startup the camera card widgets do not exist yet;
+        ``_refresh_camera_runtime_card`` guards against this with the
+        ``hasattr`` check, but we also skip spawning the HTTP thread when the
+        runtime URL can't be determined (e.g. no profile loaded yet).
+        """
+        try:
+            url = self._inspection_runtime_url("/state")
+        except Exception:
+            return
+        if not url:
+            return
+        self._refresh_camera_runtime_card()
+
+    def _refresh_camera_runtime_card(self, force=False):
+        self._refresh_camera_preview_summary()
+        if not hasattr(self, "_camera_runtime_status_badge"):
+            return
+        try:
+            self._camera_runtime_endpoint.setText(self._inspection_runtime_url("/state"))
+        except (RuntimeError, AttributeError):
+            return
+        if getattr(self, "_inspection_runtime_thread", None) and self._inspection_runtime_thread.isRunning():
+            return
+        self._inspection_runtime_thread = InspectionRuntimeRequestThread(
+            self._inspection_runtime_url("/state"),
+            method="GET",
+            timeout=3.5,
+        )
+        self._inspection_runtime_thread.result_signal.connect(self._on_camera_runtime_state)
+        self._inspection_runtime_thread.error_signal.connect(self._on_camera_runtime_error)
+        self._inspection_runtime_thread.start()
+
+    def _update_camera_runtime_widgets(self, state=None, error=None):
+        try:
+            profile = self._inspection_runtime_profile()
+            current = state or getattr(self, "_inspection_runtime_state", {}) or {}
+            camera_name = current.get("camera_name") or profile.get("camera_name") or "VisionDock Runtime Node"
+            if hasattr(self, "_camera_runtime_name"):
+                self._camera_runtime_name.setText(camera_name)
+            if hasattr(self, "_camera_runtime_endpoint"):
+                self._camera_runtime_endpoint.setText(self._inspection_runtime_url("/state"))
+
+            if error:
+                self._set_runtime_badge(self._camera_runtime_status_badge, "OFFLINE", "danger")
+                self._camera_runtime_detail.setText(f"Runtime unreachable: {error}")
+                self._set_runtime_metric_value(self._camera_runtime_model_value, "No response", "muted")
+                self._set_runtime_metric_value(self._camera_runtime_decision_value, "—", "muted")
+                self._set_runtime_metric_value(self._camera_runtime_trigger_value, (profile.get("trigger_mode") or "manual").replace("_", " ").title(), "default")
+                backend = profile.get("output_backend") or "mock"
+                gpio_enabled = bool((profile.get("gpio") or {}).get("enabled"))
+                self._set_runtime_metric_value(self._camera_runtime_gpio_value, f"{backend}\nGPIO {'enabled' if gpio_enabled else 'disabled'}", "muted")
+                self._set_runtime_metric_value(self._camera_runtime_count_value, "—", "muted")
+                self._set_runtime_metric_value(self._camera_runtime_last_trigger_value, "—", "muted")
+                self._refresh_inspection_runtime_sensor_hint()
+                self._refresh_camera_preview_summary()
+                return
+
+            runtime_status = (current.get("runtime_status") or "idle").strip().lower()
+            tone = {"idle": "success", "ready": "success", "busy": "warning", "fault": "danger", "starting": "info"}.get(runtime_status, "neutral")
+            badge_text = {"idle": "READY", "busy": "BUSY", "fault": "FAULT", "starting": "STARTING"}.get(runtime_status, (runtime_status or "unknown").upper())
+            self._set_runtime_badge(self._camera_runtime_status_badge, badge_text, tone)
+            configured_sensor = str(current.get("camera_sensor_model") or ((profile.get("camera") or {}).get("sensor_model") or "GENERIC_CSI")).strip().upper() or "GENERIC_CSI"
+            sensor_text = csi_sensor_label(configured_sensor)
+            detected_sensor = str(current.get("detected_sensor_model") or "").strip().upper()
+            sensor_match = current.get("camera_sensor_match")
+            camera_backend = current.get("camera_backend") or ((profile.get("camera") or {}).get("backend") or "mock_frame")
+            model_adapter = current.get("model_adapter") or "unconfigured"
+            recipe_name = str((profile.get("inspection") or {}).get("recipe_name") or "default_recipe")
+            detail_parts = [sensor_text, str(camera_backend).replace("_", " "), f"adapter {model_adapter}", recipe_name]
+            if detected_sensor:
+                if sensor_match is False:
+                    detail_parts.append(f"detected {detected_sensor} (mismatch)")
+                else:
+                    detail_parts.append(f"detected {detected_sensor}")
+            self._camera_runtime_detail.setText(" · ".join(detail_parts))
+            self._refresh_inspection_runtime_sensor_hint()
+
+            active_model = current.get("active_model") if isinstance(current.get("active_model"), dict) else {}
+            model_name = active_model.get("name") or "No model deployed"
+            model_version = active_model.get("version") or "unassigned"
+            self._set_runtime_metric_value(self._camera_runtime_model_value, f"{model_name}\n{model_version}", "default" if model_version != "unassigned" else "muted")
+
+            last_result = current.get("last_result") if isinstance(current.get("last_result"), dict) else {}
+            inspection_cfg = profile.get("inspection") or {}
+            decision = (last_result.get("decision") or "").strip().lower()
+            defects = last_result.get("defect_classes") or []
+            duration_ms = last_result.get("duration_ms")
+            decision_tone = {"pass": "success", "fail": "danger", "uncertain": "warning", "fault": "danger"}.get(decision, "muted")
+            decision_text = decision.upper() if decision else "No inspection yet"
+            if defects: decision_text += f"\\n{', '.join(str(x) for x in defects[:2])}"
+            elif decision == "pass": decision_text += f"\\n{inspection_cfg.get('pass_display_label') or 'Pass'}"
+            elif decision == "fail": decision_text += f"\\n{inspection_cfg.get('fail_display_label') or 'Fail'}"
+            elif decision == "uncertain": decision_text += f"\\n{inspection_cfg.get('review_display_label') or 'Review required'}"
+            if duration_ms: decision_text += f" · {duration_ms} ms"
+            self._set_runtime_metric_value(self._camera_runtime_decision_value, decision_text, decision_tone)
+
+            trigger_mode = (current.get("trigger_mode") or profile.get("trigger_mode") or "manual").replace("_", " ").title()
+            self._set_runtime_metric_value(self._camera_runtime_trigger_value, trigger_mode, "default")
+
+            effective_backend = current.get("effective_output_backend") or current.get("output_backend") or profile.get("output_backend") or "mock"
+            gpio_enabled = bool(current.get("gpio_enabled"))
+            self._set_runtime_metric_value(self._camera_runtime_gpio_value, f"{effective_backend}\nGPIO {'enabled' if gpio_enabled else 'disabled'}", "default" if gpio_enabled else "muted")
+
+            count_val = str(current.get("inspection_count")) if current.get("inspection_count") is not None else "0"
+            self._set_runtime_metric_value(self._camera_runtime_count_value, count_val, "info")
+            self._set_runtime_metric_value(self._camera_runtime_last_trigger_value, self._format_runtime_timestamp(current.get("last_trigger_at")), "default")
+            self._refresh_camera_preview_summary()
+        except Exception:
+            pass
+    def _on_camera_runtime_state(self, payload):
+        state = payload.get("state") if isinstance(payload.get("state"), dict) else payload
+        if not isinstance(state, dict):
+            self._on_camera_runtime_error("Runtime returned an invalid state payload.")
+            return
+        was_online = self._inspection_runtime_online
+        self._inspection_runtime_online = True
+        self._inspection_runtime_last_error = ""
+        self._inspection_runtime_state = state
+        self._update_camera_runtime_widgets(state=state)
+        if was_online is False:
+            self.notify_success("Inspection runtime reachable again.")
+
+    def _on_camera_runtime_error(self, message):
+        was_online = self._inspection_runtime_online
+        self._inspection_runtime_online = False
+        self._inspection_runtime_last_error = str(message or "").strip() or "Unknown runtime error."
+        self._update_camera_runtime_widgets(error=self._inspection_runtime_last_error)
+        if was_online is True:
+            self.notify_error(f"Inspection runtime unreachable: {self._inspection_runtime_last_error}")
+
+    def _set_camera_action_busy(self, kind, busy):
+        if kind == "trigger" and getattr(self, "_camera_runtime_trigger_btn", None):
+            self._camera_runtime_trigger_btn.setEnabled(not busy)
+            self._camera_runtime_trigger_btn.setText("Triggering…" if busy else "Manual Trigger")
+        if kind == "reload" and getattr(self, "_camera_runtime_reload_btn", None):
+            self._camera_runtime_reload_btn.setEnabled(not busy)
+            self._camera_runtime_reload_btn.setText("Reloading…" if busy else "Reload Profile")
+
+    def _start_camera_runtime_action(self, kind, path, payload=None, timeout=4.0):
+        if getattr(self, "_inspection_runtime_action_thread", None) and self._inspection_runtime_action_thread.isRunning():
+            return False
+        self._set_camera_action_busy(kind, True)
+        self._inspection_runtime_action_thread = InspectionRuntimeRequestThread(
+            self._inspection_runtime_url(path),
+            method="POST",
+            payload=payload or {},
+            timeout=timeout,
+        )
+        self._inspection_runtime_action_thread.result_signal.connect(lambda data, k=kind: self._on_camera_runtime_action_result(k, data))
+        self._inspection_runtime_action_thread.error_signal.connect(lambda msg, k=kind: self._on_camera_runtime_action_error(k, msg))
+        self._inspection_runtime_action_thread.start()
+        return True
+
+    def _on_camera_runtime_action_result(self, kind, payload):
+        self._set_camera_action_busy(kind, False)
+        state = payload.get("state") if isinstance(payload.get("state"), dict) else None
+        if isinstance(state, dict):
+            self._on_camera_runtime_state(state)
+        else:
+            self._refresh_camera_runtime_card(force=True)
+        if kind == "trigger":
+            if hasattr(self, "refresh_library"):
+                self.refresh_library()
+            result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+            decision = (result.get("decision") or "unknown").upper()
+            self.notify_success(f"Inspection trigger completed: {decision}")
+        elif kind == "reload":
+            self.notify_success("Inspection runtime profile reloaded.")
+
+    def _on_camera_runtime_action_error(self, kind, message):
+        self._set_camera_action_busy(kind, False)
+        self.notify_error(f"Runtime {kind} failed: {message}")
+        self._refresh_camera_runtime_card(force=True)
+
+    def _trigger_inspection_runtime(self):
+        self._start_camera_runtime_action(
+            "trigger",
+            "/trigger",
+            payload={"source": "visiondock_gui"},
+            timeout=12.0,
+        )
+
+    def _reload_inspection_runtime_profile(self):
+        self._start_camera_runtime_action(
+            "reload",
+            "/reload",
+            payload={},
+            timeout=4.0,
+        )
     
     def toggle_eco(self, c):
         self.eco_mode = c
-        self.show_toast(f"Thermal Guard: {'ENABLED' if c else 'DISABLED'}")
+        self.notify_info(t("notif.thermal_guard_on", "Thermal guard enabled.") if c else t("notif.thermal_guard_off", "Thermal guard disabled."))
         
     def _record_notification(self, level: str, message: str):
         if not hasattr(self, "_notifications"):
             self._notifications = []
+        msg = str(message or "").strip()
+        lvl = (level or "info").lower()
+        now = datetime.now()
+        now_s = now.strftime("%Y-%m-%d %H:%M:%S")
+        # Aynı mesaj kısa aralıkta tekrar geldiyse tek kayıtta biriktir.
+        if self._notifications:
+            top = self._notifications[0]
+            if top.get("level") == lvl and top.get("message") == msg:
+                try:
+                    prev_ts = datetime.strptime(top.get("ts") or "", "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    prev_ts = None
+                if prev_ts is None or (now - prev_ts).total_seconds() <= 90:
+                    top["count"] = int(top.get("count") or 1) + 1
+                    top["ts"] = now_s
+                    if hasattr(self, "_notif_list_box"):
+                        self._refresh_notifications_panel()
+                    return
         row = {
             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "level": (level or "info").lower(),
-            "message": str(message or "").strip(),
+            "level": lvl,
+            "message": msg,
+            "count": 1,
         }
         self._notifications.insert(0, row)
         if len(self._notifications) > 120:
@@ -6075,14 +7293,30 @@ class App(QMainWindow):
         if hasattr(self, "_notif_list_box"):
             self._refresh_notifications_panel()
 
-    def _show_toast_typed(self, txt, level="info"):
-        self._record_notification(level, txt)
+    def _show_toast_typed(self, txt, level="info", dedupe_window_ms=None):
+        txt = str(txt or "").strip()
+        lvl = (level or "info").lower()
+        if not txt:
+            return
+        if not hasattr(self, "_toast_last_by_key"):
+            self._toast_last_by_key = {}
+        if dedupe_window_ms is None:
+            dedupe_window_ms = 2200 if lvl == "info" else (3200 if lvl == "warning" else 0)
+        if dedupe_window_ms > 0:
+            key = f"{lvl}|{txt}"
+            now_ms = int(time.monotonic() * 1000)
+            last_ms = int(self._toast_last_by_key.get(key) or 0)
+            if now_ms - last_ms < dedupe_window_ms:
+                self._record_notification(lvl, txt)
+                return
+            self._toast_last_by_key[key] = now_ms
+        self._record_notification(lvl, txt)
         prefix = {
             "info":    "[i]",
             "success": "[OK]",
             "warning": "[!]",
             "error":   "[ERR]",
-        }.get((level or "info").lower(), "[i]")
+        }.get(lvl, "[i]")
         t = Toast(f"{prefix} {txt}", self, self.is_dark)
         t.adjustSize()
         tw = t.sizeHint().width() or 280
@@ -6113,24 +7347,16 @@ class App(QMainWindow):
         self._remote_status_state = state
         if not getattr(self, "remote_node_status_label", None):
             return
-        pal = ThemeOps.palette(self.is_dark)
         if state is None:
-            self.remote_node_status_label.setText("Local")
-            self.remote_node_status_label.setStyleSheet(
-                f"font-size:13px;font-weight:700;color:{pal['sub']};border:none;background:transparent;"
-            )
+            self._set_status_pill(self.remote_node_status_label, "Local", "neutral")
         elif state:
-            self.remote_node_status_label.setText("Online")
-            self.remote_node_status_label.setStyleSheet(
-                f"font-size:13px;font-weight:700;color:{pal['accent_net']};border:none;background:transparent;"
-            )
+            self._set_status_pill(self.remote_node_status_label, "Online", "success")
         else:
-            self.remote_node_status_label.setText("Offline")
-            self.remote_node_status_label.setStyleSheet(
-                "font-size:13px;font-weight:700;color:#FF453A;border:none;background:transparent;"
-            )
+            self._set_status_pill(self.remote_node_status_label, "Offline", "danger")
 
-    def _schedule_remote_status_check(self):
+    def _schedule_remote_status_check(self, force=False):
+        if (not force) and (not bool(getattr(self, "_background_health_checks_enabled", False))):
+            return
         if not getattr(self, "_remote_status_timer", None):
             self._remote_status_timer = QTimer(self)
             self._remote_status_timer.setSingleShot(True)
@@ -6153,20 +7379,21 @@ class App(QMainWindow):
         prev = getattr(self, "_remote_was_online", None)
         self._remote_was_online = online
         self._update_remote_status_label(online)
+        self._refresh_settings_hub()
         if online is True and prev is not True:
             host = (getattr(self, "remote_host_input", None) and self.remote_host_input.text().strip()) or "remote host"
-            self.notify_success(f"Remote host online: {host}")
+            self.notify_success(t("notif.remote_online", "Runtime endpoint reachable: {host}", host=host))
         elif online is False and prev is not False:
             host = (getattr(self, "remote_host_input", None) and self.remote_host_input.text().strip()) or "remote host"
-            self.notify_error(f"Remote host unreachable: {host}")
+            self.notify_error(t("notif.remote_unreachable", "Runtime endpoint unreachable: {host}", host=host))
         host = (self.node_ip.text() or "").strip()
-        if host:
+        if host and bool(getattr(self, "_background_health_checks_enabled", False)):
             QTimer.singleShot(25000, self._run_remote_status_check)
 
     def _on_remote_host_text_changed(self, t):
         DockerManager.set_host(t)
-        self.show_toast(f"Node: {(t or '').strip() or 'Local'}")
         self._schedule_remote_status_check()
+        self._refresh_settings_hub()
         if getattr(self, "_remote_pref_timer", None):
             self._remote_pref_timer.stop()
             self._remote_pref_timer.start(600)
@@ -6185,16 +7412,14 @@ class App(QMainWindow):
         prev_docker = getattr(self, "_docker_was_running", None)
         self._docker_was_running = running
         lbl.setText("ACTIVE" if running else "OFFLINE")
-        color = "#30D158" if running else "#FF453A"
         if running and prev_docker is not True:
-            self.notify_success("Docker engine is active")
+            self.notify_success(t("notif.docker_active", "Docker service is active."))
         elif not running and prev_docker is not False:
-            self.notify_error("Docker engine is offline")
-        lbl.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: 700; border: none;")
+            self.notify_error(t("notif.docker_offline", "Docker service is unavailable."))
+        self._set_status_pill(lbl, "ACTIVE" if running else "OFFLINE", "success" if running else "danger")
         if btn is not None:
             btn.setVisible(not running)
-        if running:
-            self.show_toast("Docker is running")
+        self._refresh_settings_hub()
 
     def run_health_check(self):
         results = []
@@ -6214,13 +7439,20 @@ class App(QMainWindow):
         [btn.setChecked(idx == i) for idx, btn in enumerate(self.navs)]
         if i == 0:  # Home tab: refresh dashboard stats
             QTimer.singleShot(0, self.refresh_home_page)
+        if i == 1:  # Cameras tab: refresh runtime status
+            QTimer.singleShot(0, self._refresh_camera_runtime_card)
+        if i == 2:  # Workspaces tab: refresh package manager state
+            QTimer.singleShot(0, getattr(self, "_refresh_workspace_package_panel", lambda: None))
         if i == 3:  # Devices tab: refresh peer list
             QTimer.singleShot(0, getattr(self, "refresh_devices_page", lambda: None))
-        if i == 4:  # Library tab: refresh recordings
+        if i == 4:  # Results tab: refresh inspection history
             QTimer.singleShot(0, getattr(self, "refresh_library", lambda: None))
         if i == 5:  # Settings tab: refresh remote node status + Docker status
-            self._schedule_remote_status_check()
+            if bool(getattr(self, "_check_remote_on_settings_open", False)):
+                self._schedule_remote_status_check(force=True)
             QTimer.singleShot(0, self._refresh_docker_status)
+            QTimer.singleShot(0, self._refresh_settings_hub)
+            QTimer.singleShot(120, self._show_operator_quick_tour_once)
     def upd_stats(self, d): 
         for i, k in enumerate(['cpu','ram','disk','gpu']): self.charts[i].set_value(d[k])
     def toggle_theme(self, c): self.is_dark = c; self.apply_theme()
@@ -6234,7 +7466,7 @@ class App(QMainWindow):
             self.notify_success(f"Join requested: {nwid}")
             self.refresh_settings_page()
             self.refresh_home_page()
-            self.refresh_devices_page()
+            self.refresh_devices_page(force=True)
         else:
             self.notify_error(f"Join failed: {out[:180] if out else 'unknown error'}")
 
@@ -6248,45 +7480,68 @@ class App(QMainWindow):
             self.notify_info(f"Leave requested: {nwid}")
             self.refresh_settings_page()
             self.refresh_home_page()
-            self.refresh_devices_page()
+            self.refresh_devices_page(force=True)
         else:
             self.notify_error(f"Leave failed: {out[:180] if out else 'unknown error'}")
 
     def _refresh_notifications_panel(self):
         box = getattr(self, "_notif_list_box", None)
-        if box is None:
-            return
+        if box is None: return
         while box.count():
-            it = box.takeAt(0)
-            w = it.widget() if it else None
-            if w is not None:
-                w.deleteLater()
-        rows = list(getattr(self, "_notifications", [])[:20])
+            it = box.takeAt(0); w = it.widget()
+            if w: w.deleteLater()
+        all_rows = list(getattr(self, "_notifications", []) or [])
+        rows = all_rows[:6]
+        summary = getattr(self, "_notif_summary_label", None)
+        if summary is not None:
+            if not all_rows:
+                summary.setText(t("notif.none_active", "No active notifications."))
+            else:
+                newest = all_rows[0]
+                count = len(all_rows)
+                key = "notif.stored_single" if count == 1 else "notif.stored_multi"
+                summary.setText(t(key, "{count} notifications stored. Latest: [{ts}] {message}", count=count, ts=newest.get("ts", "—"), message=newest.get("message", "")))
         if not rows:
-            empty = QLabel("No notifications yet.")
-            empty.setObjectName("CaptionMuted")
-            box.addWidget(empty)
+            lbl = QLabel(t("notif.system_normal", "System is normal. No notifications.")); lbl.setObjectName("CaptionMuted"); box.addWidget(lbl)
+            self._refresh_settings_hub()
             return
         for n in rows:
-            lv = n.get("level", "info").upper()
-            ts = n.get("ts", "—")
-            msg = n.get("message", "")
-            line = QLabel(f"[{ts}] {lv} — {msg}")
-            line.setObjectName("MonoMuted")
-            line.setWordWrap(True)
-            line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            box.addWidget(line)
+            lv, ts, msg = n.get("level", "info").lower(), n.get("ts", "—"), n.get("message", "")
+            cnt = int(n.get("count") or 1)
+            if cnt > 1:
+                msg = f"{msg} (x{cnt})"
+            color = {"success": "#30D158", "error": "#FF453A", "warning": "#FF9F0A"}.get(lv, "#888888")
+            
+            row = QFrame(); row.setStyleSheet(f"background:rgba(255,255,255,0.03); border-radius:6px; margin-bottom:2px;")
+            rl = QHBoxLayout(row); rl.setContentsMargins(12,8,12,8); rl.setSpacing(10)
+            
+            dot = QLabel("●"); dot.setStyleSheet(f"color: {color}; font-size: 10px;")
+            txt = QLabel(f"[{ts}] {msg}"); txt.setStyleSheet("color: #BBBBBB; font-family: 'SF Mono', monospace; font-size: 11px;")
+            txt.setWordWrap(True)
+            
+            rl.addWidget(dot); rl.addWidget(txt, 1); box.addWidget(row)
+        self._refresh_settings_hub()
 
     def _collect_settings_bundle(self):
         prefs = load_app_prefs()
         cam_defaults = get_camera_defaults()
+        inspection_profile = load_inspection_profile()
         return {
             "version": 1,
             "exported_at": datetime.now().isoformat(),
             "app_prefs": prefs,
             "camera_defaults": cam_defaults,
+            "inspection_profile": inspection_profile,
             "ui_state": {
                 "is_dark": bool(getattr(self, "is_dark", True)),
+                "sidebar_compact": bool(getattr(self, "_sidebar_compact", True)),
+                "background_health_checks_enabled": bool(getattr(self, "_background_health_checks_enabled", False)),
+                "auto_camera_preview_on_launch": bool(getattr(self, "_auto_camera_preview_on_launch", False)),
+                "check_remote_on_settings_open": bool(getattr(self, "_check_remote_on_settings_open", False)),
+                "scheduler_policy": str(getattr(self, "_scheduler_policy", "manual")),
+                "ui_role_mode": str(getattr(self, "_ui_role_mode", "operator")),
+                "confirm_engineering_mode_switch": bool(getattr(self, "_confirm_engineering_mode_switch", True)),
+                "operator_quick_tour_seen": bool(getattr(self, "_operator_quick_tour_seen", False)),
             },
         }
 
@@ -6295,11 +7550,14 @@ class App(QMainWindow):
             raise ValueError("Invalid settings file: root object must be JSON object.")
         app_prefs = data.get("app_prefs")
         cam_defaults = data.get("camera_defaults")
+        inspection_profile = data.get("inspection_profile")
         ui_state = data.get("ui_state", {})
         if not isinstance(app_prefs, dict):
             raise ValueError("Invalid settings file: app_prefs is missing or invalid.")
         if not isinstance(cam_defaults, dict):
             raise ValueError("Invalid settings file: camera_defaults is missing or invalid.")
+        if inspection_profile is not None and not isinstance(inspection_profile, dict):
+            raise ValueError("Invalid settings file: inspection_profile is invalid.")
         with open(_app_prefs_path(), "w", encoding="utf-8") as f:
             json.dump(app_prefs, f, indent=2)
         current = get_camera_defaults()
@@ -6307,11 +7565,46 @@ class App(QMainWindow):
             if k in cam_defaults:
                 current[k] = cam_defaults[k]
         save_camera_defaults_to_disk()
+        if inspection_profile is not None:
+            merged_profile = _deep_merge_dicts(default_inspection_profile(), inspection_profile)
+            save_inspection_profile(merged_profile)
         if "is_dark" in ui_state:
             self.is_dark = bool(ui_state.get("is_dark"))
+        if "sidebar_compact" in ui_state:
+            self._sidebar_compact = bool(ui_state.get("sidebar_compact"))
+            save_app_prefs_sidebar_compact(self._sidebar_compact)
+        if "background_health_checks_enabled" in ui_state:
+            self._background_health_checks_enabled = bool(ui_state.get("background_health_checks_enabled"))
+            save_app_prefs_flag("background_health_checks_enabled", self._background_health_checks_enabled)
+        if "auto_camera_preview_on_launch" in ui_state:
+            self._auto_camera_preview_on_launch = bool(ui_state.get("auto_camera_preview_on_launch"))
+            save_app_prefs_flag("auto_camera_preview_on_launch", self._auto_camera_preview_on_launch)
+        if "check_remote_on_settings_open" in ui_state:
+            self._check_remote_on_settings_open = bool(ui_state.get("check_remote_on_settings_open"))
+            save_app_prefs_flag("check_remote_on_settings_open", self._check_remote_on_settings_open)
+        if "scheduler_policy" in ui_state:
+            self._scheduler_policy = str(ui_state.get("scheduler_policy") or "manual").strip().lower()
+            if self._scheduler_policy not in ("manual", "balanced", "full", "custom"):
+                self._scheduler_policy = "manual"
+            save_app_prefs_value("scheduler_policy", self._scheduler_policy)
+        if "ui_role_mode" in ui_state:
+            self._ui_role_mode = str(ui_state.get("ui_role_mode") or "operator").strip().lower()
+            if self._ui_role_mode not in ("operator", "engineering"):
+                self._ui_role_mode = "operator"
+            save_app_prefs_value("ui_role_mode", self._ui_role_mode)
+        if "confirm_engineering_mode_switch" in ui_state:
+            self._confirm_engineering_mode_switch = bool(ui_state.get("confirm_engineering_mode_switch"))
+            save_app_prefs_flag("confirm_engineering_mode_switch", self._confirm_engineering_mode_switch)
+        if "operator_quick_tour_seen" in ui_state:
+            self._operator_quick_tour_seen = bool(ui_state.get("operator_quick_tour_seen"))
+            save_app_prefs_flag("operator_quick_tour_seen", self._operator_quick_tour_seen)
         self.apply_theme()
+        if self._scheduler_policy in ("manual", "balanced", "full"):
+            self._apply_scheduler_policy(self._scheduler_policy, persist=False, notify=False)
+        self._apply_background_health_checks_policy(run_initial_check=self._background_health_checks_enabled)
+        self._apply_settings_role_mode()
         self.refresh_home_page()
-        self.refresh_devices_page()
+        self.refresh_devices_page(force=True)
         try:
             if hasattr(self, "node_ip"):
                 new_ip = (load_app_prefs().get("remote_host_ip") or "").strip()
@@ -6319,6 +7612,7 @@ class App(QMainWindow):
                 DockerManager.set_host(new_ip if new_ip else None)
         except Exception:
             pass
+        self._sync_inspection_profile_ui()
 
     def export_settings_json(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -6397,7 +7691,7 @@ class App(QMainWindow):
             "Ctrl+2":  lambda: self.switch(1),   # Cameras
             "Ctrl+3":  lambda: self.switch(2),   # Workspaces
             "Ctrl+4":  lambda: self.switch(3),   # Devices
-            "Ctrl+5":  lambda: self.switch(4),   # Library
+            "Ctrl+5":  lambda: self.switch(4),   # Results
             "Ctrl+6":  lambda: self.switch(5),   # Settings
             "Ctrl+R":  self.refresh_home_page,
             "Ctrl+K":  self.show_toast if hasattr(self, "show_toast") else lambda: None,
@@ -6405,6 +7699,16 @@ class App(QMainWindow):
         for seq, fn in _map.items():
             sc = QShortcut(QKeySequence(seq), self)
             sc.activated.connect(fn)
+
+    def refresh_home_page(self):
+        """Re-scan current active view based on tab index"""
+        idx = self.tabs.currentIndex()
+        if idx == 0: pass # Dashboard is static
+        elif idx == 1: self.refresh_cams()
+        elif idx == 2: self.check_docker()
+        elif idx == 3: self.refresh_devices_page()
+        elif idx == 4: self.refresh_library()
+        elif idx == 5: pass # Settings
 
     # ── C8: Update check ───────────────────────────────────────────────────
     def _check_for_updates(self):
@@ -6700,6 +8004,7 @@ class App(QMainWindow):
 
     def apply_theme(self):
         QApplication.instance().setStyleSheet(ThemeOps.get_style(self.is_dark))
+        self._apply_sidebar_mode(refresh_labels=False)
         for ts in self.findChildren(ToggleSwitch):
             ts.update()
         for card in self.findChildren(ResizableCard):
@@ -6708,8 +8013,17 @@ class App(QMainWindow):
             ch.update()
         if getattr(self, "_remote_status_initialized", False):
             self._update_remote_status_label(getattr(self, "_remote_status_state", None))
-    def modal_cam(self): self.show_overlay("New broadcast source", self.add_cam_logic, for_camera=True)
-    def modal_doc(self): self.show_overlay("New workspace", self.add_doc_logic, for_camera=False)
+        if hasattr(self, "_camera_runtime_status_badge"):
+            if getattr(self, "_inspection_runtime_online", None) is False:
+                try:
+                    self._update_camera_runtime_widgets(error=getattr(self, "_inspection_runtime_last_error", "") or "Runtime unreachable.")
+                except Exception: pass
+            else:
+                try:
+                    self._update_camera_runtime_widgets(state=getattr(self, "_inspection_runtime_state", {}) or None)
+                except Exception: pass
+    def modal_cam(self): self.show_overlay("Add inspection source", self.add_cam_logic, for_camera=True)
+    def modal_doc(self): self.show_overlay("New model workspace", self.add_doc_logic, for_camera=False)
     def refresh_cameras(self):
         """Reload broadcast camera cards from the database."""
         self.active_srcs.clear()
@@ -6721,9 +8035,12 @@ class App(QMainWindow):
         self.cf.removeWidget(self.abc); self.cf.addWidget(self.abc)
         for name, src, meta in self.db.get_cameras():
             self.add_cam_logic(name, src, meta, save=False)
+        self._refresh_camera_preview_summary()
 
     def refresh_ui(self):
         """Reload workspace cards from Docker."""
+        if not hasattr(self, "df") or getattr(self, "df", None) is None or not hasattr(self, "abd"):
+            return
         self.active_cids.clear()
         for i in reversed(range(self.df.count())):
             w = self.df.itemAt(i).widget()
@@ -6731,6 +8048,8 @@ class App(QMainWindow):
                 if getattr(w, "checker", None) and w.checker.isRunning(): w.checker.quit()
                 w.deleteLater()
         self.df.removeWidget(self.abd); self.df.addWidget(self.abd); self.check_docker()
+        if hasattr(self, "_refresh_workspace_package_panel"):
+            self._refresh_workspace_package_panel()
     def check_docker(self):
         """
         Refresh workspace cards from current Docker host.
@@ -6739,6 +8058,8 @@ class App(QMainWindow):
         - Docker returns 12-char IDs in some commands and 64-char in others.
           We normalize before DB lookup to avoid duplicate/ghost cards.
         """
+        if not hasattr(self, "df") or getattr(self, "df", None) is None or not hasattr(self, "abd"):
+            return
         if not DockerManager.is_running():
             return
         for c in DockerManager.list_containers():
@@ -6860,10 +8181,10 @@ class App(QMainWindow):
             "720p / 1080p / 4K sets both Jetson pipeline size (when applicable) and preview processing."
         )
         ai_setup_label = QLabel("AI setup:")
-        zt_cam_label = QLabel("Hızlı:")
-        zt_cam_btn = QPushButton("Aktif cihaz URL'sini kullan")
+        zt_cam_label = QLabel("Quick action:")
+        zt_cam_btn = QPushButton("Use active device RTSP")
         zt_cam_btn.setObjectName("ShellBtn")
-        zt_cam_btn.setToolTip("Stream URL'sini aktif SSH cihazının IP'si ile doldur (RTSP)")
+        zt_cam_btn.setToolTip("Fill the stream URL with the active Jetson device IP.")
         zt_cam_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
         # Helper: creates a themed, cross-platform-safe QComboBox
@@ -6888,13 +8209,14 @@ class App(QMainWindow):
         mode_combo = cam_combo = container_combo = script_input = cat_combo = run_target_combo = None
 
         if is_cam:
-            name_input = QLineEdit(); name_input.setPlaceholderText("Stream name (e.g. Garden cam)")
+            name_input = QLineEdit(); name_input.setPlaceholderText("Inspection source name (e.g. Front project camera)")
             mode_combo = make_combo()
             mode_combo.addItem("Physical device", "Physical")
             mode_combo.addItem("Network stream", "Stream")
-            mode_combo.addItem("AI workspace", "Container")
+            if not getattr(self, "_production_mode", False):
+                mode_combo.addItem("Workspace preview", "Container")
         else:
-            name_input = QLineEdit(); name_input.setPlaceholderText("Workspace adı (ör. Jetson AI Lab)")
+            name_input = QLineEdit(); name_input.setPlaceholderText("Workspace name (e.g. Jetson defect lab)")
             # Genişletilmiş AI kütüphane kataloğu
             _AI_CATALOG = [
                 {"name": "L4T PyTorch 2.0 (Jetson)",       "img": "nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3",  "desc": "PyTorch 2.0 — JetPack 5.x"},
@@ -7007,9 +8329,9 @@ class App(QMainWindow):
             if ip:
                 url_input.setText(f"rtsp://{ip}:554/stream")
                 if not name_input.text().strip():
-                    name_input.setText("Uzak Kamera")
+                    name_input.setText("Remote Inspection Camera")
             else:
-                self.show_toast("Önce 'Devices' sayfasından bir cihaza bağlanın.")
+                self.show_toast("Connect a device from Devices first.")
         zt_cam_btn.clicked.connect(fill_remote_stream_url)
 
         # Safeguard all elements from deletion (None values are filtered by the 'if e' guard below)
@@ -7095,13 +8417,13 @@ class App(QMainWindow):
                 elif m == "Stream":
                     val = url_input.text().strip()
                     if not val:
-                        QMessageBox.warning(ov, "Stream", "Bir stream URL'si girin. Kamera 'Devices' sayfasındaki cihazdaysa 'Aktif cihaz URL'sini kullan'ı tıklayın.")
+                        QMessageBox.warning(ov, "Stream", "Enter a stream URL. If the camera belongs to the active Jetson, use 'Use active device RTSP'.")
                         return
                     if not name: name = f"Stream: {val[:15]}"
                 elif m == "Container":
                     cid = container_combo.currentData(); script = script_input.text().strip()
                     if not cid:
-                        QMessageBox.warning(ov, "AI workspace", "No container selected. Create a workspace first or ensure one is running.")
+                        QMessageBox.warning(ov, "Workspace preview", "No workspace container selected. Create one first or ensure it is running.")
                         return
                     val = f"docker://{cid}?script={script}"
                     if not name: name = f"AI: {container_combo.currentText().split(' ')[0]}"
@@ -7141,10 +8463,10 @@ class App(QMainWindow):
         l.addWidget(box)
         ov.show()
 
-    def add_cam_logic(self, name, src, meta=None, save=True):
+    def add_cam_logic(self, name, src, meta=None, save=True, start_preview=None):
         if src is None or src == "" or src in self.active_srcs: return
         self.active_srcs.add(src)
-        card = ResizableCard(name, meta or "", False); card.trigger_delete_modal.connect(self.show_delete_confirmation); card.removed.connect(lambda: [self.active_srcs.remove(src) if src in self.active_srcs else None, card.deleteLater()])
+        card = ResizableCard(name, meta or "", False); card.trigger_delete_modal.connect(self.show_delete_confirmation); card.removed.connect(lambda: [self.active_srcs.remove(src) if src in self.active_srcs else None, self._camera_preview_enabled_sources.discard(src), card.deleteLater()])
         card.db = self.db; card.sub_val = src
         card._layout_persist_src = src
         saved = self._camera_card_geom.get(src)
@@ -7153,12 +8475,23 @@ class App(QMainWindow):
             card.resize(cw, ch)
         self.cf.removeWidget(self.abc); self.cf.addWidget(card); self.cf.addWidget(self.abc)
         if save: self.db.save_camera(name, src, meta or "")
-        
+        self._refresh_camera_preview_summary()
+
         if str(src).startswith("docker://"):
             card.view.setText("AI engine starting...")
         elif src is not None:
             card.stream_meta = meta or ""
-            self._attach_camera_thread(card, name, src, meta or "")
+            should_start = bool(start_preview) if start_preview is not None else (
+                (src in getattr(self, "_camera_preview_enabled_sources", set()))
+                or bool(getattr(self, "_auto_camera_preview_on_launch", False))
+            )
+            if should_start:
+                self._start_camera_preview(card)
+            else:
+                card.view.setText("Preview paused. Click Start.")
+                card.set_status_info("PAUSED", "#8E8E93")
+                if hasattr(card, "preview_btn"):
+                    card.preview_btn.setText("Start")
         else:
             card.view.setText("No source signal")
 
@@ -7177,6 +8510,41 @@ class App(QMainWindow):
             log.warning("update_camera_meta failed: %s", e)
         self._attach_camera_thread(card, name, src, new_meta)
         self.show_toast("Akış ayarları kaydedildi; önizleme yeniden başlatıldı.")
+
+    def _start_camera_preview(self, card):
+        if card is None:
+            return
+        src = getattr(card, "sub_val", None)
+        if not src:
+            return
+        name = getattr(card, "title_text", "") or "Camera"
+        meta = getattr(card, "stream_meta", "") or ""
+        self._camera_preview_enabled_sources.add(src)
+        self._attach_camera_thread(card, name, src, meta)
+        if hasattr(card, "preview_btn"):
+            card.preview_btn.setText("Stop")
+
+    def _stop_camera_preview(self, card):
+        if card is None:
+            return
+        src = getattr(card, "sub_val", None)
+        if src:
+            self._camera_preview_enabled_sources.discard(src)
+        t = getattr(card, "t", None)
+        if t is not None:
+            t.stop()
+            try:
+                t.wait(1800)
+            except Exception:
+                pass
+            card.t = None
+        if hasattr(card, "view"):
+            card.view.setText("Preview paused. Click Start.")
+        if hasattr(card, "preview_btn"):
+            card.preview_btn.setText("Start")
+        if hasattr(card, "fps_lbl"):
+            card.fps_lbl.setText("")
+        card.set_status_info("PAUSED", "#8E8E93")
 
     def _attach_camera_thread(self, card, name, src, meta):
         """Kamera görüntü iş parçacığını (yeniden) bağlar."""
@@ -7334,6 +8702,8 @@ class App(QMainWindow):
                 card.set_status_info("Çalışıyor", "#30D158")
                 card.start_monitoring()
                 self.db.save_workspace(cn, img, cid_norm, host=target if use_remote else None)
+                if hasattr(self, "_refresh_workspace_package_panel"):
+                    self._refresh_workspace_package_panel()
                 if use_remote:
                     self.notify_success(
                         f"Uzak container başlatıldı: {cn} "
@@ -7379,6 +8749,8 @@ class App(QMainWindow):
         self._persist_remote_host_pref()
         if getattr(self, "_remote_status_timer", None):
             self._remote_status_timer.stop()
+        if getattr(self, "_inspection_runtime_timer", None):
+            self._inspection_runtime_timer.stop()
         if getattr(self, "_zt_peer_refresh_timer", None):
             self._zt_peer_refresh_timer.stop()
         rthr = getattr(self, "_remote_status_thread", None)
@@ -7387,6 +8759,18 @@ class App(QMainWindow):
             if rthr.isRunning():
                 rthr.terminate()
                 rthr.wait(1500)
+        irthr = getattr(self, "_inspection_runtime_thread", None)
+        if irthr is not None and irthr.isRunning():
+            irthr.wait(2500)
+            if irthr.isRunning():
+                irthr.terminate()
+                irthr.wait(1000)
+        iathr = getattr(self, "_inspection_runtime_action_thread", None)
+        if iathr is not None and iathr.isRunning():
+            iathr.wait(2500)
+            if iathr.isRunning():
+                iathr.terminate()
+                iathr.wait(1000)
         for card in self.findChildren(ResizableCard):
             t = getattr(card, "t", None)
             if t is not None and t.isRunning():
@@ -7432,13 +8816,7 @@ if __name__ == "__main__":
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     w = App()
-    splash = w._show_splash_screen()
+        # Splash disabled for clean first launch
+        # splash = w._show_splash_screen()
     w.show()
-    if splash is not None:
-        QTimer.singleShot(1700, w.raise_)
-        QTimer.singleShot(1750, w.activateWindow)
     sys.exit(app.exec())
-
-
-
-
