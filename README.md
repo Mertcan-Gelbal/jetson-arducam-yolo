@@ -1,85 +1,65 @@
-# VisionDock: Jetson AI Ecosystem
+# VisionDock: Universal Industrial AI Terminal
 
-VisionDock is a professional, production-ready suite designed to bridge modern Computer Vision models with NVIDIA Jetson hardware. It provides a seamless, automated environment for deploying high-performance AI applications with specialized support for Arducam CSI and USB imaging systems.
+[![Release](https://img.shields.io/github/v/release/Mertcan-Gelbal/jetson-arducam-yolo)](https://github.com/Mertcan-Gelbal/jetson-arducam-yolo/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-## Key Capabilities
+**VisionDock** is a professional, production-ready graphical interface and runtime framework designed to bridge AI Computer Vision models with industrial hardware. Designed explicitly for manufacturing lines, lab environments, and quality control operators, VisionDock provides a seamless, zero-code environment for deploying high-performance AI monitoring.
 
-*   **Automated Environment:** Intelligent detection of JetPack 5.x/6.x to configure the optimal AI stack.
-*   **Hardware-Accelerated Imaging:** Native integration with DeepStream-compatible GStreamer pipelines for zero-latency CSI and USB video feeds.
-*   **Universal Model Support:** Out-of-the-box compatibility with YOLOv8, YOLOv11, and RT-DETR via Ultralytics and PyTorch.
-*   **Production Architecture:** Containerized deployment using Docker and Docker Compose with full hardware passthrough (CUDA, TensorRT, NVENC).
+## 🚀 Key Features
 
-## Quick Start (Automated Installer)
+*   **Operator-First Dashboard:** A clean, minimal GUI designed for non-technical production line operators. Track inspections, review historical logs, and monitor live cameras seamlessly.
+*   **Universal Camera Support:** Ready-out-of-the-box compatibility with standard USB webcams, industrial IP streams, and high-framerate CSI device cameras.
+*   **Hardware Integration:** Built-in support for physical factory triggers (foot pedals, optical sensors) and status indicator integration (Green/Red LED towers, PLCs) via native GPIO integration.
+*   **Robust Environment:** Runs isolated AI stacks without cluttering the local machine, preventing downtime, and maintaining secure operator sessions.
 
-The core of the VisionDock deployment is the `install.sh` script. This modular installer orchestrates the entire system setup, ensuring all hardware drivers and software dependencies are perfectly aligned.
+## 🖥 Starting the Operator Dashboard
+
+On your monitoring PC or industrial tablet (Windows, macOS, or Linux), you do not need to install heavy backend AI libraries. Just launch the operator dashboard using the provided startup script.
+
+It will automatically initialize its own secure environment and prepare the application:
 
 ```bash
-# Clone the repository
-git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo
-cd jetson-arducam-yolo
-
-# Run the master installer
-chmod +x install.sh
-./install.sh
+chmod +x start_gui.sh
+./start_gui.sh
 ```
 
-### What `install.sh` Provides:
-1.  **System Diagnostics:** Verifies JetPack version, CUDA availability, and hardware health.
-2.  **Driver Management:** Automatically installs and configures Arducam CSI camera drivers (IMX series).
-3.  **Environment Orchestration:** Builds a custom, lightweight Docker environment tailored to your specific Jetson model.
-4.  **Hardware Passthrough:** Configures the system to allow high-performance access to GPU and ISP resources from within containers.
+*(Advanced setup: You can manually run `python3 -m pip install -r gui/requirements.txt` followed by `python3 gui/main.py`)*
 
-## Project Architecture
+## ✅ Operator Flow (Product View)
 
-*   **`install.sh`**: The primary entry point for full-system initialization.
-*   **`Dockerfile`**: Defines the optimized, hardware-accelerated AI environment.
-*   **`gui/`**: Contains **VisionDock Studio**—a professional desktop interface for managing camera streams and AI workspaces.
-*   **`scripts/`**: Modular utilities for camera setup, image building, and health checks.
-*   **`examples/`**: Production-ready Python templates for inference and spatial analytics.
+For day-to-day production usage, the expected user journey is:
 
-## Troubleshooting: CSI Camera Driver Installation
+1. **Open `Settings`** and confirm runtime endpoint, role mode, and automation profile.
+2. **Open `Inspection`** and verify camera preview/runtime health before triggering.
+3. **Open `Results`** for decision review and historical traceability.
 
-If the automated installer fails with **"Automatic installation failed"** or **"Could not find download link for fallback version"**, this means your Jetson's L4T (Linux for Tegra) kernel version does not have an exact match in Arducam's driver repository.
+This keeps operator actions focused while advanced commissioning controls remain gated under Engineering mode.
 
-### Solution 1: Manual Driver Installation (Recommended)
+## 🏭 System Architecture
 
-1. Check your current L4T version:
-   ```bash
-   dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel
-   ```
+The VisionDock platform is modular to ensure high availability on the factory floor:
 
-2. Visit the [Arducam MIPI Camera Releases](https://github.com/ArduCAM/MIPI_Camera/releases) page.
+*   **`start_gui.sh`**: One-click startup script for the desktop operator panel.
+*   **`gui/`**: Contains the **VisionDock Studio**—the streamlined industrial frontend.
+*   **`runtime/`**: Contains the inspection services that interface with cameras and GPIO modules.
+*   **`install.sh`**: The baseline setup script required for configuring local camera drivers on initial deployment targets.
+*   **`Dockerfile`**: Defines the highly optimized, containerized engine for deep learning.
 
-3. Download the `.deb` driver package that is **closest** to your L4T version. Match the `tegra-XX.X` portion of the filename (e.g., if your version is `35.6.4`, look for a package with `35.6.x`).
+## 📚 Administrator Documentation
 
-4. Install manually and reboot:
-   ```bash
-   sudo dpkg -i <downloaded_arducam_package>.deb
-   sudo reboot
-   ```
+For system integrators and IT departments setting up the underlying frameworks, refer to our technical configuration guides safely stored in the `docs/` folder:
 
-### Solution 2: Reflash with a Compatible JetPack
+| Documentation | Description |
+|-------|-------------|
+| [PRODUCTION DEPLOYMENT](docs/PRODUCTION_DEPLOYMENT.md) | Deployment, scaling, and operational best practices for factory floors |
+| [CAMERA MODULE GUIDANCE](docs/CAMERA_MODULE_GUIDANCE.md) | Sensor-family vs module vs lens decisions for IMX219 / IMX477 / IMX519 systems |
+| [HARDWARE & FOCUS](docs/CSI_CAMERA_FOCUS.md) | Calibration instructions for autofocus and motorized lenses |
+| [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Resolution steps for backend network and driver anomalies |
+| [INSTALLATION](docs/INSTALLATION.md) | Initial setup of Deep Learning drivers for Jetson/Edge targets |
 
-If no compatible driver exists for your current system, you can reflash your Jetson with a JetPack version that has official Arducam support using [NVIDIA SDK Manager](https://developer.nvidia.com/sdk-manager).
+## 🛠 Support & Licensing
 
-### Solution 3: Contact Arducam Support
-
-*   **Email:** support@arducam.com
-*   **GitHub Issues:** [ArduCAM/MIPI_Camera](https://github.com/ArduCAM/MIPI_Camera/issues)
-
-Include your L4T version (`dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel`) and Jetson model name in your support request.
-
-## Documentation
-
-| Rehber | Açıklama |
-|--------|----------|
-| [Mac'ten Jetson Yönetimi](docs/MAC_JETSON_YONETIMI.md) | Mac'ten kamera cihazını yönetme (ZeroTier, adım adım) |
-| [USAGE](docs/USAGE.md) | Kullanım ve örnekler |
-| [INSTALLATION](docs/INSTALLATION.md) | Kurulum (Jetson, kamera, Docker) |
-| [TROUBLESHOOTING](docs/TROUBLESHOOTING.md) | Sorun giderme |
-
-## Support
-For technical support or commercial inquiries, please refer to the internal documentation in the `docs/` folder or open a GitHub issue. Developed for professional AI engineers and vision researchers.
+For technical assistance or system integration consulting, please consult the internal documentation or contact your designated IT support administrator. VisionDock is built for stability, scale, and high-throughput vision monitoring.
 
 ---
-**License:** MIT License.
+**License:** Proprietary / Commercial Standard (MIT)

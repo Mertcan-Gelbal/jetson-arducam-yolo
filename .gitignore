@@ -28,6 +28,7 @@ venv/
 ENV/
 env/
 .venv
+.venv_gui/
 
 # PyTorch
 *.pth
@@ -81,10 +82,19 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+.codex_tmp/
+fix_dashboard_vnext.py
+fix_network_lag.py
+restore_pages.py
 
 # YOLOv8 specific
 ultralytics_cache/
 wandb/
+
+# Local developer notes / scratch (optional; see dev-notes/README.md)
+dev-notes/*
+!dev-notes/README.md
+*.local.md
 
 # GUI Runtime / Application Data (do not commit)
 gui/*.db
@@ -95,3 +105,24 @@ gui/recordings/
 # Local workspace bind-mount directories (created by VisionDock when adding workspaces)
 workspaces/
 # NOTE: gui/requirements.txt and gui/catalog.json ARE tracked and should NOT be listed here
+
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+node_modules/
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 

@@ -19,7 +19,7 @@ if ! command -v pyinstaller &> /dev/null; then
 fi
 
 echo "[2/3] Compiling App into a standalone binary..."
-# Note: PyInstaller wraps the python dependencies, but relies on system cv2/PyQt5
+# Note: bundle may still pull OpenCV; Qt is PySide6 from the Python env
 # --windowed removes console terminal popups on launch
 pyinstaller --name "$APP_NAME" \
             --windowed \

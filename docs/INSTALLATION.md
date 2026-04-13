@@ -17,7 +17,7 @@ This guide provides comprehensive instructions for setting up the YOLOv8 Arducam
 ### Hardware Setup
 
 1. **Jetson Device**: Ensure your Jetson is properly powered and connected
-2. **Camera Connection**: Attach Arducam IMX519 cameras to MIPI CSI ports
+2. **Camera Connection**: Attach Arducam (or compatible) CSI modules to MIPI CSI ports — e.g. IMX219, IMX230, IMX477, IMX519 (see [CSI_CAMERA_FOCUS.md](CSI_CAMERA_FOCUS.md) for sensor notes)
 3. **Storage**: Verify you have sufficient storage (32GB minimum)
 4. **Cooling**: Ensure proper cooling for extended operation
 
@@ -111,14 +111,19 @@ chmod +x install_full.sh
 You should see a list including:
 - imx219
 - imx477
-- **imx519** ← We'll install this one
+- imx519
 - ov9281
 - etc.
 
-### 3. Install IMX519 Driver
+### 3. Install The Driver For Your CSI Module
 
 ```bash
-# Install the IMX519 camera driver
+# Install the driver that matches your module
+# Examples:
+sudo ./install_full.sh -m imx219
+# or
+sudo ./install_full.sh -m imx477
+# or
 sudo ./install_full.sh -m imx519
 
 # System will prompt for confirmation
@@ -269,8 +274,8 @@ sudo usermod -aG docker $USER
 cd ~/Documents
 
 # Clone the repository
-git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git
-cd jetson-arducam-yolo
+git clone https://github.com/Mertcan-Gelbal/jetson-arducam-yolo.git visiondock
+cd visiondock
 ```
 
 ### 2. Review Dockerfile
@@ -453,7 +458,7 @@ After successful installation:
 **Solution:**
 ```bash
 # Check kernel messages
-dmesg | grep -i imx519
+dmesg | grep -Ei 'imx219|imx477|imx519|ov9281|arducam'
 
 # Restart nvargus daemon
 sudo systemctl restart nvargus-daemon

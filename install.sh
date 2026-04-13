@@ -30,6 +30,7 @@ show_help() {
     echo "  --build      Build/Rebuild Docker environment"
     echo "  --run        Launch the container (docker run)"
     echo "  --compose    Launch via Docker Compose (recommended for production)"
+    echo "  --docker-host Start Docker (Linux) or Docker Desktop (macOS); add user to docker/video on Linux"
     echo "  --help       Show this help message"
     echo ""
 }
@@ -74,6 +75,10 @@ case "$1" in
         log_success "Container started. Enter with:"
         echo "  docker compose exec jetson-ai bash"
         ;;
+    --docker-host)
+        log_info "Preparing Docker engine and user permissions (VisionDock / Jetson host)…"
+        ./scripts/prepare_docker_and_permissions.sh
+        ;;
     --help)
         show_help
         ;;
@@ -88,6 +93,11 @@ case "$1" in
         echo ""
         log_info "Verifying system state..."
         ./scripts/test_installation.sh || log_warn "Verification had warnings. Proceeding..."
+
+        # 2b. Docker + permissions (Linux: sudo; macOS: may open Docker Desktop)
+        echo ""
+        log_info "Ensuring Docker is available and user has docker/video groups (Linux)…"
+        ./scripts/prepare_docker_and_permissions.sh || log_warn "Docker/permission prep had warnings. You may need to log out and back in, or start Docker Desktop manually."
         
         # 3. Build
         echo ""
@@ -102,7 +112,7 @@ case "$1" in
         echo ""
         echo -e "${BOLD}Final Technical Checklist:${NC}"
         echo -e " 1. ${CYAN}Maximizing Performance:${NC} Run 'sudo nvpmodel -m 0 && sudo jetson_clocks'"
-        echo -e " 2. ${CYAN}Camera Permissions:${NC} User is in 'video' group? (verify with 'groups')"
+        echo -e " 2. ${CYAN}Camera / Docker permissions:${NC} Re-login after install if 'docker info' fails (groups docker,video). Or: ./install.sh --docker-host"
         echo -e " 3. ${CYAN}Model Preparation:${NC} Popular models pre-downloaded? (run './scripts/download_models.sh')"
         echo -e " 4. ${CYAN}Diagnostic Tool:${NC} If anything fails, run './scripts/test_installation.sh'"
         echo ""

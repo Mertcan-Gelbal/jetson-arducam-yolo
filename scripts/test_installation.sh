@@ -117,12 +117,18 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-# Check for IMX519 in kernel messages
-if dmesg | grep -q imx519; then
-    echo -e "${GREEN}✓ IMX519 driver loaded${NC}"
+# Check for common CSI sensor strings in kernel log (any match is OK)
+CSI_HIT=""
+for pat in imx219 imx230 imx477 imx519 imx708 ov9281 ov7251; do
+    if dmesg 2>/dev/null | grep -qi "$pat"; then
+        CSI_HIT="${CSI_HIT}${pat} "
+    fi
+done
+if [ -n "$CSI_HIT" ]; then
+    echo -e "${GREEN}✓ CSI-related message in dmesg: ${CSI_HIT}${NC}"
 else
-    echo -e "${RED}✗ IMX519 driver not detected in kernel messages${NC}"
-    ERRORS=$((ERRORS + 1))
+    echo -e "${YELLOW}⚠ No common imx*/ov* sensor string in dmesg (USB camera or undetected CSI is still possible)${NC}"
+    WARNINGS=$((WARNINGS + 1))
 fi
 
 # Check I2C devices

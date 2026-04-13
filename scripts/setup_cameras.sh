@@ -203,6 +203,7 @@ setup_csi_camera() {
     echo "  4) IMX708 (Raspberry Pi V3)"
     echo "  5) OV9281 (Global Shutter)"
     echo "  6) OV7251 (Global Shutter)"
+    echo "  7) Other — type Arducam module id (e.g. imx230; must match *_links.txt on Arducam releases)"
     echo ""
     read -p "Enter number [3]: " CHOICE
     
@@ -214,6 +215,13 @@ setup_csi_camera() {
         4) MODEL="imx708" ;;
         5) MODEL="ov9281" ;;
         6) MODEL="ov7251" ;;
+        7) read -p "Module id (lowercase, e.g. imx230): " CUSTOM
+            MODEL=$(echo "$CUSTOM" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_')
+            if [ -z "$MODEL" ]; then
+                log_error "Empty module id"
+                exit 1
+            fi
+            ;;
     esac
     
     echo ""
@@ -459,11 +467,6 @@ setup_csi_camera() {
         echo "  If no compatible driver exists, consider reflashing your"
         echo "  Jetson with a JetPack version that matches an available driver."
         echo "  Use NVIDIA SDK Manager: https://developer.nvidia.com/sdk-manager"
-        echo ""
-        echo -e "${CYAN}Option 3: Contact Arducam Support${NC}"
-        echo "  Email: support@arducam.com"
-        echo "  GitHub: https://github.com/ArduCAM/MIPI_Camera/issues"
-        echo "  Include your L4T version and Jetson model in your request."
         echo ""
         echo -e "${BOLD}=====================================================================${NC}"
         exit 1

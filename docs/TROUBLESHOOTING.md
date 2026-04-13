@@ -19,7 +19,7 @@ This guide covers common issues and their solutions when working with Arducam ca
 
 **Script Output:**
 ```
-Cannot find the corresponding deb package, please send the following information to support@arducam.com
+Cannot find the corresponding deb package for your exact L4T version
 Kernel version: 5.10.216-tegra-35.6.4-...
 Jetson type: NVIDIA Orin Nano Developer Kit
 ```
@@ -85,17 +85,6 @@ sudo dpkg -i *.deb
 sudo reboot
 ```
 
-### Solution 3: Contact Arducam
-
-If no compatible version exists, you may need to request an update:
-
-1. **Email:** support@arducam.com
-2. **Include:**
-   - Your Jetson model: `cat /sys/firmware/devicetree/base/model`
-   - Your L4T version: `dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel`
-   - Camera model (e.g., IMX519)
-3. **GitHub Issue:** https://github.com/ArduCAM/MIPI_Camera/issues
-
 ### Why Fallback Usually Works
 
 Drivers within the same **major.minor** version (e.g., 35.6.x) are typically compatible because:
@@ -131,17 +120,17 @@ Drivers within the same **major.minor** version (e.g., 35.6.x) are typically com
 
 2. **Verify camera driver installation:**
    ```bash
-   # Check if IMX519 driver is installed
-   dmesg | grep -i imx519
+   # Check if your CSI camera driver is installed
+   dmesg | grep -Ei 'imx219|imx477|imx519|ov9281|arducam'
    
    # Reinstall if necessary
-   sudo ./install_full.sh -m imx519
+   sudo ./install_full.sh -m <your-camera-model>
    sudo reboot
    ```
 
 3. **Check kernel modules:**
    ```bash
-   lsmod | grep imx519
+   lsmod | grep -Ei 'imx219|imx477|imx519|ov9281|arducam'
    
    # If not loaded, try manual load
    sudo modprobe imx519
