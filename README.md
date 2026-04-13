@@ -1,5 +1,9 @@
 # VisionDock: Universal Industrial AI Terminal
 
+[![Release](https://img.shields.io/github/v/release/Mertcan-Gelbal/jetson-arducam-yolo)](https://github.com/Mertcan-Gelbal/jetson-arducam-yolo/releases)
+[![GHCR Package](https://img.shields.io/badge/GHCR-Packages-blue)](https://github.com/Mertcan-Gelbal/jetson-arducam-yolo/pkgs/container/jetson-arducam-yolo)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 **VisionDock** is a professional, production-ready graphical interface and runtime framework designed to bridge AI Computer Vision models with industrial hardware. Designed explicitly for manufacturing lines, lab environments, and quality control operators, VisionDock provides a seamless, zero-code environment for deploying high-performance AI monitoring.
 
 ## 🚀 Key Features
@@ -21,6 +25,19 @@ chmod +x start_gui.sh
 ```
 
 *(Advanced setup: You can manually run `python3 -m pip install -r gui/requirements.txt` followed by `python3 gui/main.py`)*
+
+## 📦 Packages (GitHub Container Registry)
+
+VisionDock container images can be published to GHCR and consumed directly in deployment environments.
+
+```bash
+docker pull ghcr.io/mertcan-gelbal/jetson-arducam-yolo:latest
+```
+
+Release/tag builds publish versioned tags automatically via GitHub Actions workflow:
+- `v*` tags -> release tag image
+- default branch -> `latest`
+- every published image -> `sha-<commit>`
 
 ## ✅ Operator Flow (Product View)
 
