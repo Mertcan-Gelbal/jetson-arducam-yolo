@@ -1093,7 +1093,7 @@ class DockerManager:
             elif plat == "Windows":
                 subprocess.Popen(f"start powershell.exe -NoExit -Command \"{docker_cmd}\"", shell=True)
         except Exception as e:
-            log.error("Terminal açma hatası: %s", e)
+            log.error("Terminal launch error: %s", e)
 
 class DockerCreationThread(QThread):
     result = Signal(str, bool)
@@ -1895,7 +1895,7 @@ class ResizableCard(QFrame):
         else:
             add_item("Start preview", lambda: self.window() and hasattr(self.window(), "_start_camera_preview") and self.window()._start_camera_preview(self))
         if "://" in str(getattr(self, "sub_val", "")):
-            add_item("Akış önizleme (çözünürlük / FPS)…", self._open_stream_tuning_dialog)
+            add_item("Stream preview (resolution / FPS)...", self._open_stream_tuning_dialog)
         add_item("More in Settings...", self._open_settings_tab)
         outer.addWidget(panel)
         app = QApplication.instance()
@@ -1943,25 +1943,25 @@ class ResizableCard(QFrame):
             nw, nh, fps_hint = nw, nh, 0.0
 
         dlg = QDialog(app_win)
-        dlg.setWindowTitle("Akış önizleme")
+        dlg.setWindowTitle("Stream preview")
         dlg.setFixedWidth(448)
         lay = QVBoxLayout(dlg)
         lay.setSpacing(12)
         lay.setContentsMargins(18, 18, 18, 16)
         det = ""
         if nw and nh:
-            det = f"<br><b>Algılanan kaynak</b> — {nw}×{nh} (aynı en-boy oranında küçültmeler listelenir)."
+            det = f"<br><b>Detected source</b> — {nw}×{nh} (downsized options keep aspect ratio)."
             if fps_hint >= 5:
-                det += f" Tahmini kaynak FPS: ~{fps_hint:.0f}."
+                det += f" Estimated source FPS: ~{fps_hint:.0f}."
         else:
             det = (
-                "<br><i>Kaynak çözünürlüğü ölçülemedi</i> (ağ / kısa zaman aşımı). "
-                "Genel 16:9 ön ayarlar gösterilir; canlı akış varken menüyü tekrar açmak genelde ölçümü iyileştirir."
+                "<br><i>Source resolution could not be measured</i> (network / short timeout). "
+                "Generic 16:9 presets are shown; opening this menu while stream is active usually improves probing."
             )
         info = QLabel(
-            "<b>Önizleme çözünürlüğü</b> — seçilen boyuta <i>istemci tarafında</i> indirgenir; "
-            "Jetson encoder çözünürlüğünü değiştirmez.<br>"
-            "<b>FPS üst sınırı</b> — 0 = mümkün olan en akıcı; düşük CPU için sınırlayın."
+            "<b>Preview resolution</b> — scales on the <i>client side</i>; "
+            "does not change Jetson encoder output.<br>"
+            "<b>FPS limit</b> — 0 = maximum smoothness; limit when CPU usage is high."
             + det
         )
         info.setWordWrap(True)
@@ -1971,12 +1971,12 @@ class ResizableCard(QFrame):
         combo = QComboBox()
         combo.setFixedHeight(36)
         if nw and nh:
-            combo.addItem(f"Tam kaynak — {nw}×{nh} (yeniden örnekleme yok)", None)
+            combo.addItem(f"Full source — {nw}×{nh} (no resampling)", None)
             for w, h in _preview_resolution_choices(nw, nh):
                 pct = max(1, min(99, int(round(100.0 * w * h / (nw * nh)))))
-                combo.addItem(f"Önizleme {w}×{h}  (~%{pct})", (w, h))
+                combo.addItem(f"Preview {w}×{h}  (~%{pct})", (w, h))
         else:
-            combo.addItem("Kaynak — yeniden boyutlandırma yok", None)
+            combo.addItem("Source — no resize", None)
             for label, wh in (
                 ("1280 × 720", (1280, 720)),
                 ("960 × 540", (960, 540)),
@@ -1994,7 +1994,7 @@ class ResizableCard(QFrame):
                     break
             if not found:
                 w, h = int(cur_wh[0]), int(cur_wh[1])
-                combo.addItem(f"Kayıtlı ayar {w}×{h}", (w, h))
+                combo.addItem(f"Saved setting {w}×{h}", (w, h))
         sel_ix = 0
         for i in range(combo.count()):
             d = combo.itemData(i)
@@ -2005,14 +2005,14 @@ class ResizableCard(QFrame):
                 sel_ix = i
                 break
         combo.setCurrentIndex(sel_ix)
-        lay.addWidget(QLabel("Önizleme çözünürlüğü"))
+        lay.addWidget(QLabel("Preview resolution"))
         lay.addWidget(combo)
-        lay.addWidget(QLabel("Hedef FPS üst sınırı (0 = sınırsız)"))
+        lay.addWidget(QLabel("Target FPS limit (0 = unlimited)"))
         spin = QSpinBox()
         spin.setRange(0, 120)
         if fps_hint >= 8:
             spin.setMaximum(max(120, int(fps_hint) + 20))
-            spin.setToolTip(f"Kaynak ~{fps_hint:.0f} fps bildirdi; üst sınır buna göre ayarlanabilir.")
+            spin.setToolTip(f"Source reported ~{fps_hint:.0f} fps; tune upper limit accordingly.")
         spin.setValue(cur_fps)
         spin.setFixedHeight(36)
         lay.addWidget(spin)
@@ -2020,7 +2020,7 @@ class ResizableCard(QFrame):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         ok_b = bb.button(QDialogButtonBox.StandardButton.Ok)
-        ok_b.setText("Uygula")
+        ok_b.setText("Apply")
         ok_b.setObjectName("BtnPrimary")
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
@@ -4089,6 +4089,7 @@ class App(QMainWindow):
         self._show_setup_wizard_on_launch = bool(prefs.get("show_setup_wizard_on_launch", False))
         self._devices_last_scan_ts = 0.0
         self._devices_scan_ttl_sec = 45.0
+        self._devices_auto_refresh_enabled = bool(prefs.get("devices_auto_refresh_enabled", False))
         self._inspection_runtime_state = {}
         self._inspection_runtime_online = None
         self._inspection_runtime_last_error = ""
@@ -4120,6 +4121,10 @@ class App(QMainWindow):
         if self._scheduler_policy in ("manual", "balanced", "full"):
             self._apply_scheduler_policy(self._scheduler_policy, persist=False, notify=False)
         self._apply_background_health_checks_policy(run_initial_check=True)
+        self._devices_auto_refresh_timer = QTimer(self)
+        self._devices_auto_refresh_timer.setInterval(60000)
+        self._devices_auto_refresh_timer.timeout.connect(self._on_devices_auto_refresh_tick)
+        self._apply_devices_auto_refresh_policy()
         self._setup_shortcuts()
         
         # Ensure it fits the screen properly
@@ -4438,6 +4443,43 @@ class App(QMainWindow):
             "Remote status check on Settings open enabled."
             if self._check_remote_on_settings_open
             else "Remote status check on Settings open disabled."
+        )
+
+    def toggle_setup_wizard_on_launch(self, enabled):
+        self._show_setup_wizard_on_launch = bool(enabled)
+        save_app_prefs_flag("show_setup_wizard_on_launch", self._show_setup_wizard_on_launch)
+        self.notify_info(
+            "Production Setup will open on app launch."
+            if self._show_setup_wizard_on_launch
+            else "Production Setup auto-open disabled."
+        )
+
+    def _apply_devices_auto_refresh_policy(self):
+        timer = getattr(self, "_devices_auto_refresh_timer", None)
+        if timer is None:
+            return
+        if bool(getattr(self, "_devices_auto_refresh_enabled", False)):
+            if not timer.isActive():
+                timer.start()
+        else:
+            timer.stop()
+
+    def _on_devices_auto_refresh_tick(self):
+        if not bool(getattr(self, "_devices_auto_refresh_enabled", False)):
+            return
+        tabs = getattr(self, "tabs", None)
+        if tabs is None or tabs.currentIndex() != 3:
+            return
+        self.refresh_devices_page(force=True)
+
+    def toggle_devices_auto_refresh(self, enabled):
+        self._devices_auto_refresh_enabled = bool(enabled)
+        save_app_prefs_flag("devices_auto_refresh_enabled", self._devices_auto_refresh_enabled)
+        self._apply_devices_auto_refresh_policy()
+        self.notify_info(
+            "Devices auto-refresh enabled (1 minute interval)."
+            if self._devices_auto_refresh_enabled
+            else "Devices auto-refresh disabled."
         )
 
     def set_ui_role_mode(self, role: str):
@@ -4977,7 +5019,7 @@ class App(QMainWindow):
             time.sleep(1.2)
             tail, _, _ = ssh_exec_text(client, "tail -n 20 /tmp/visiondock-stream.log 2>/dev/null || true", timeout=8)
             msg = ((err or "").strip() + "\n" + (tail or "").strip()).strip()
-            return True, (msg[:900] if msg else "Komut gönderildi (log: /tmp/visiondock-stream.log)")
+            return True, (msg[:900] if msg else "Command sent (log: /tmp/visiondock-stream.log)")
         except Exception as e:
             return False, str(e)
 
@@ -5007,8 +5049,8 @@ class App(QMainWindow):
         if not self._is_ssh_device_connected(ssh_host, ssh_user):
             QMessageBox.information(
                 self,
-                "Yayına Ekle",
-                "Önce bu cihaz için SSH oturumu açın («Bağlan…» veya ZeroTier satırında «Kaydet & Bağlan»).",
+                "Add Stream",
+                "Open an SSH session for this device first ('Connect…' or 'Save & Connect' from the ZeroTier row).",
             )
             return
         client = self._ssh_sessions.get(ssh_session_key(ssh_host, ssh_user))
@@ -5018,22 +5060,22 @@ class App(QMainWindow):
         if not lines or (len(lines) == 1 and lines[0].lower().startswith("error")):
             QMessageBox.warning(
                 self,
-                "Kamera",
-                "Uzak cihazda /dev/video veya v4l2 çıktısı alınamadı.\n\n"
-                "• Kamera bağlı mı, başka süreç kullanıyor mu kontrol edin.\n"
-                "• Jetson’da: ls /dev/video*  ve  v4l2-ctl --list-devices\n"
-                "• RTSP için çoğu kurulumda mediamtx / jetson-utils veya ffmpeg gerekir.",
+                "Camera",
+                "Unable to read /dev/video or v4l2 output on the remote device.\n\n"
+                "• Confirm camera connection and that no other process is holding the device.\n"
+                "• On Jetson: ls /dev/video* and v4l2-ctl --list-devices\n"
+                "• RTSP setups usually require mediamtx / jetson-utils or ffmpeg.",
             )
             return
         dlg = QDialog(self)
-        dlg.setWindowTitle("Kamera — Yayına Ekle")
+        dlg.setWindowTitle("Camera — Add Stream")
         dlg.setFixedWidth(540)
         dlg_l = QVBoxLayout(dlg)
         dlg_l.setContentsMargins(24, 22, 24, 22)
         dlg_l.setSpacing(14)
         info = QLabel(
-            f"<b>{dev_name}</b> — yayın için kullanılacak IP: <b>{sip or '—'}</b><br>"
-            "Kamera girişini seçin; gerekirse Jetson’da akış başlatma komutu çalıştırılır."
+            f"<b>{dev_name}</b> — runtime IP for stream: <b>{sip or '—'}</b><br>"
+            "Choose camera input; VisionDock can run the remote stream command if needed."
         )
         info.setWordWrap(True)
         dlg_l.addWidget(info)
@@ -5043,30 +5085,30 @@ class App(QMainWindow):
             cam_combo.addItem(ln[:80] + ("…" if len(ln) > 80 else ""), ln)
         dlg_l.addWidget(cam_combo)
         if cam_combo.count() == 0:
-            dlg_l.addWidget(QLabel("Kamera satırı yok."))
+            dlg_l.addWidget(QLabel("No camera lines detected."))
             dlg.reject()
             return
 
         stream_mode_combo = QComboBox()
         stream_mode_combo.setFixedHeight(36)
         stream_mode_combo.addItem(
-            "Jetson CSI — NVArgus + GStreamer → MJPEG (TCP) :5000 — önerilen",
+            "Jetson CSI — NVArgus + GStreamer -> MJPEG (TCP) :5000 (recommended)",
             "csi_gst_http",
         )
         stream_mode_combo.addItem(
-            "Manual / advanced URL — yalnızca hazır sunucu varsa",
+            "Manual / advanced URL (only if a stream server already exists)",
             "manual_url",
         )
         stream_mode_combo.setCurrentIndex(0)
         stream_mode_combo.setToolTip(
-            "Üretim hattı için önerilen yol Jetson CSI + NVIDIA Argus + GStreamer akışıdır. "
-            "Manual URL seçeneği yalnızca önceden kurulmuş gelişmiş akışlar içindir."
+            "Recommended production path is Jetson CSI + NVIDIA Argus + GStreamer stream. "
+            "Manual URL is for preconfigured advanced stream servers only."
         )
         dlg_l.addWidget(stream_mode_combo)
         warn = QLabel(
-            "<b>Connection refused</b>: 5000’de HTTP dinleyen yok (uzak komut çıkmış veya yanlış profil).<br>"
-            "Üretim hattında yalnızca üstteki <b>NVArgus / GStreamer</b> profili önerilir.<br>"
-            "Kamera meşgul: <code>fuser -v /dev/video0</code> · Log: <code>tail /tmp/visiondock-stream.log</code>"
+            "<b>Connection refused</b>: nothing is listening on port 5000 (remote command failed or wrong profile).<br>"
+            "For production lines, use the <b>NVArgus / GStreamer</b> profile above.<br>"
+            "Camera busy check: <code>fuser -v /dev/video0</code> · Log: <code>tail /tmp/visiondock-stream.log</code>"
         )
         warn.setObjectName("CaptionMuted")
         warn.setTextFormat(Qt.TextFormat.RichText)
@@ -5081,7 +5123,7 @@ class App(QMainWindow):
         def current_line():
             return cam_combo.currentData() or cam_combo.currentText()
 
-        url_lbl = QLabel("Yayın URL’si")
+        url_lbl = QLabel("Stream URL")
         url_lbl.setObjectName("FormLabel")
         dlg_l.addWidget(url_lbl)
         url_edit = QLineEdit(f"http://{sip}:5000/" if sip else "")
@@ -5094,19 +5136,19 @@ class App(QMainWindow):
         def sync_url_from_stream_mode(_=None):
             if stream_mode_is_manual():
                 url_edit.setReadOnly(False)
-                url_edit.setToolTip("Jetson’da hazır RTSP veya HTTP adresi (VLC / ffplay ile doğrulayın).")
+                url_edit.setToolTip("Pre-existing RTSP or HTTP stream URL on Jetson (verify with VLC / ffplay).")
                 if not (url_edit.text() or "").strip() and sip:
                     url_edit.setText(f"rtsp://{sip}:8554/video{cam_idx_from_line(current_line())}")
             else:
                 url_edit.setText(f"http://{sip}:5000/" if sip else "")
                 url_edit.setReadOnly(True)
                 url_edit.setToolTip(
-                    "Jetson’da GStreamer multipart MJPEG gönderir (tcpserversink :5000). "
-                    "Adres http://… yazsa da VisionDock aynı portta TCP fallback dener."
+                    "Jetson sends multipart MJPEG via GStreamer (tcpserversink :5000). "
+                    "Even if URL is http://..., VisionDock also tries TCP fallback on the same port."
                 )
 
         name_edit = QLineEdit(f"{dev_name} / {cam_idx_from_line(current_line())}")
-        name_edit.setPlaceholderText("Yayın adı")
+        name_edit.setPlaceholderText("Stream name")
         dlg_l.addWidget(name_edit)
 
         def sync_name_from_cam(_=None):
@@ -5117,18 +5159,18 @@ class App(QMainWindow):
         sync_url_from_stream_mode()
 
         mirror_name_edit = QLineEdit(f"{(dev_name or 'dev').lower().replace(' ', '_')}_mirror")
-        mirror_name_edit.setPlaceholderText("Mirror adı (isteğe bağlı)")
+        mirror_name_edit.setPlaceholderText("Mirror name (optional)")
         dlg_l.addWidget(mirror_name_edit)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         ok_b = btns.button(QDialogButtonBox.StandardButton.Ok)
-        ok_b.setText("Yayına Ekle")
+        ok_b.setText("Add Stream")
         ok_b.setObjectName("BtnPrimary")
         ok_b.setMinimumHeight(36)
         can_b = btns.button(QDialogButtonBox.StandardButton.Cancel)
-        can_b.setText("İptal")
+        can_b.setText("Cancel")
         can_b.setObjectName("BtnSecondary")
         can_b.setMinimumHeight(36)
         btns.accepted.connect(dlg.accept)
@@ -5158,7 +5200,7 @@ class App(QMainWindow):
                 "multipartmux ! "
                 f"tcpserversink host=0.0.0.0 port={_http_port} sync=false blocksize=65536"
             )
-            remote_label = "Uzak GStreamer"
+            remote_label = "Remote GStreamer"
             ok_run, detail = self._ssh_run_remote_stream_command(ssh_host, ssh_user, inner)
             sess = self._ssh_sessions.get(ssh_session_key(ssh_host, ssh_user))
             listening = bool(sess and self._ssh_verify_tcp_listen(sess, _http_port)) if ok_run else False
@@ -5182,52 +5224,52 @@ class App(QMainWindow):
                     )
                 )
                 jetson_checks = (
-                    "Jetson’da kontrol (NVArgus / GStreamer):\n"
+                    "Jetson checks (NVArgus / GStreamer):\n"
                     "• tail -40 /tmp/visiondock-stream.log\n"
-                    "• ss -lntp | grep :5000 (LISTEN görünmeli)\n"
+                    "• ss -lntp | grep :5000 (LISTEN expected)\n"
                     "• gst-inspect-1.0 tcpserversink multipartmux nvjpegenc nvarguscamerasrc\n"
-                    "• Log’da «syntax error» veya «unexpected token»: caps tırnağı eksik (uygulama güncel mi)\n"
-                    "• Üretim için yalnızca CSI / NVArgus profilini kullanın"
+                    "• If log shows 'syntax error' or 'unexpected token': caps quoting issue (ensure app is current)\n"
+                    "• For production, use CSI / NVArgus profile only"
                 )
                 if listening:
                     self.show_toast(
-                        "Jetson’da :5000 dinleniyor (MJPEG); birkaç saniye içinde önizleme denenecek."
+                        "Jetson is listening on :5000 (MJPEG); preview should start in a few seconds."
                     )
                     if suspicious:
                         QMessageBox.warning(
                             self,
                             remote_label,
-                            "Port açık görünüyor ancak log’da hata izleri var. Sorun çıkarsa:\n" + jetson_checks,
+                            "Port is open but logs contain error traces. If stream fails:\n" + jetson_checks,
                         )
                 else:
                     QMessageBox.warning(
                         self,
                         remote_label,
-                        "Jetson’da :5000 üzerinde dinleme yok; Mac’te «Connection refused» bu yüzdendir.\n\n"
+                        "Nothing is listening on Jetson :5000; this is why macOS may show 'Connection refused'.\n\n"
                         + jetson_checks,
                     )
                     return
             else:
-                QMessageBox.warning(self, "Uzak komut", detail[:500] if detail else "SSH komutu başarısız.")
+                QMessageBox.warning(self, "Remote command", detail[:500] if detail else "SSH command failed.")
                 return
         url = url_edit.text().strip()
         cam_name = name_edit.text().strip() or f"{dev_name} cam"
         if not url:
-            QMessageBox.warning(self, "Yayın", "Stream URL boş.")
+            QMessageBox.warning(self, "Stream", "Stream URL is empty.")
             return
         self.add_cam_logic(cam_name, url, "Stream|STANDARD|AUTO")
         mirror_nm = mirror_name_edit.text().strip()
         if mirror_nm:
             self.add_cam_logic(mirror_nm, url, "Stream|STANDARD|AUTO")
-            self.show_toast(f"Yayın eklendi: {cam_name}, {mirror_nm}")
+            self.show_toast(f"Stream added: {cam_name}, {mirror_nm}")
         else:
-            self.show_toast(f"Yayın eklendi: {cam_name}")
+            self.show_toast(f"Stream added: {cam_name}")
         self.switch(1)
 
     def _peer_row_yayina_ekle(self, path_ip: str, user_w: QLineEdit, node_addr: str, stream_guess: str):
         u = user_w.text().strip() or "jetson"
         if not path_ip:
-            self.show_toast("Path IP yok")
+            self.show_toast("Path IP is missing.")
             return
         if not self._is_ssh_device_connected(path_ip, u):
             creds = self._ssh_password_dialog(path_ip, u, node_addr)
@@ -5425,7 +5467,7 @@ class App(QMainWindow):
     def _fetch_peer_zt_virtual_ips(self, path_ip: str, user: str, node_id: str, *, goto_devices: bool = False):
         """Path IP üzerinden SSH ile uzakta zerotier-cli çalıştırıp sanal IP'leri önbelleğe yazar."""
         if not (path_ip or "").strip():
-            self.show_toast("IP bulunamadı — cihaz aktif bir path'e sahip değil")
+            self.show_toast("IP not found — device has no active path.")
             return
         path_ip = path_ip.strip()
         u = (user or "").strip() or "jetson"
@@ -5436,7 +5478,7 @@ class App(QMainWindow):
             if goto_devices:
                 self.switch(3)
             if ips:
-                self.show_toast(f"ZT sanal IP: {', '.join(ips)}")
+                self.show_toast(f"ZT virtual IP: {', '.join(ips)}")
             else:
                 self.show_toast(empty_msg)
 
@@ -5445,17 +5487,17 @@ class App(QMainWindow):
             if client:
                 ips = ssh_get_zerotier_ips(client)
                 self._zt_peer_cached_ips[cache_key] = ips
-                _after_fetch(ips, "Uzak cihazda ZT adresi bulunamadı (zerotier-cli / ağ?)")
+                _after_fetch(ips, "No ZT address found on remote device (zerotier-cli / network issue?).")
             return
         creds = self._ssh_password_dialog(path_ip, u, node_id)
         if creds is None:
             return
         final_user, password = creds
-        self.show_toast(f"ZT IP'leri alınıyor: {final_user}@{path_ip}…")
+        self.show_toast(f"Fetching ZT IPs: {final_user}@{path_ip}...")
         client, err = ssh_connect_with_password(path_ip, final_user, password)
         if err:
-            QMessageBox.warning(self, "SSH bağlantısı başarısız", err)
-            self.notify_error(f"SSH hatası: {path_ip} — {err[:80]}")
+            QMessageBox.warning(self, "SSH connection failed", err)
+            self.notify_error(f"SSH error: {path_ip} - {err[:80]}")
             return
         try:
             ips = ssh_get_zerotier_ips(client)
@@ -5465,7 +5507,7 @@ class App(QMainWindow):
             except Exception:
                 pass
         self._zt_peer_cached_ips[cache_key] = ips
-        _after_fetch(ips, "ZT adresi alınamadı — cihazda ZeroTier kurulu mu?")
+        _after_fetch(ips, "Failed to fetch ZT address — is ZeroTier installed on the device?")
 
     def _disconnect_all_ssh_sessions(self):
         for key in list(self._ssh_sessions.keys()):
@@ -5501,11 +5543,11 @@ class App(QMainWindow):
         if creds is None:
             return
         final_user, password = creds
-        self.show_toast(f"Bağlanılıyor: {final_user}@{host.strip()}…")
+        self.show_toast(f"Connecting: {final_user}@{host.strip()}...")
         client, err = ssh_connect_with_password(host.strip(), final_user, password)
         if err:
-            QMessageBox.warning(self, "SSH bağlantısı başarısız", err)
-            self.notify_error(f"SSH hatası: {host} — {err[:80]}")
+            QMessageBox.warning(self, "SSH connection failed", err)
+            self.notify_error(f"SSH error: {host} - {err[:80]}")
             return
         self._ssh_disconnect_device(host, final_user)
         self._ssh_sessions[ssh_session_key(host, final_user)] = client
@@ -5513,8 +5555,8 @@ class App(QMainWindow):
         if hasattr(self, "node_ip"):
             self.node_ip.setText(host)
         DockerManager.set_host(host)
-        self.show_toast(f"Bağlantı kuruldu: {final_user}@{host}")
-        self.notify_success(f"SSH bağlandı: {host}")
+        self.show_toast(f"Connected: {final_user}@{host}")
+        self.notify_success(f"SSH connected: {host}")
         self.refresh_devices_page(force=True)
 
     def _show_onboarding_wizard(self, force: bool = False):
@@ -5937,7 +5979,9 @@ class App(QMainWindow):
                 f"Scheduler: {str(getattr(self, '_scheduler_policy', 'manual')).title()} • "
                 f"Checks: {'On' if getattr(self, '_background_health_checks_enabled', False) else 'Off'} • "
                 f"Auto preview: {'On' if getattr(self, '_auto_camera_preview_on_launch', False) else 'Off'} • "
-                f"Settings check: {'On' if getattr(self, '_check_remote_on_settings_open', False) else 'Off'}"
+                f"Settings check: {'On' if getattr(self, '_check_remote_on_settings_open', False) else 'Off'} • "
+                f"Devices auto-refresh: {'On' if getattr(self, '_devices_auto_refresh_enabled', False) else 'Off'} • "
+                f"Setup on launch: {'On' if getattr(self, '_show_setup_wizard_on_launch', False) else 'Off'}"
             )
         eco_switch = getattr(self, "_maintenance_eco_switch", None)
         if eco_switch is not None and eco_switch.isChecked() != bool(getattr(self, "eco_mode", False)):
@@ -5949,6 +5993,16 @@ class App(QMainWindow):
             theme_switch.blockSignals(True)
             theme_switch.setChecked(bool(getattr(self, "is_dark", True)))
             theme_switch.blockSignals(False)
+        devices_refresh_switch = getattr(self, "_maintenance_devices_auto_refresh_switch", None)
+        if devices_refresh_switch is not None and devices_refresh_switch.isChecked() != bool(getattr(self, "_devices_auto_refresh_enabled", False)):
+            devices_refresh_switch.blockSignals(True)
+            devices_refresh_switch.setChecked(bool(getattr(self, "_devices_auto_refresh_enabled", False)))
+            devices_refresh_switch.blockSignals(False)
+        setup_wizard_switch = getattr(self, "_maintenance_setup_wizard_on_launch_switch", None)
+        if setup_wizard_switch is not None and setup_wizard_switch.isChecked() != bool(getattr(self, "_show_setup_wizard_on_launch", False)):
+            setup_wizard_switch.blockSignals(True)
+            setup_wizard_switch.setChecked(bool(getattr(self, "_show_setup_wizard_on_launch", False)))
+            setup_wizard_switch.blockSignals(False)
         bg_switch = getattr(self, "_maintenance_bg_checks_switch", None)
         if bg_switch is not None and bg_switch.isChecked() != bool(getattr(self, "_background_health_checks_enabled", False)):
             bg_switch.blockSignals(True)
@@ -7542,6 +7596,8 @@ class App(QMainWindow):
                 "ui_role_mode": str(getattr(self, "_ui_role_mode", "operator")),
                 "confirm_engineering_mode_switch": bool(getattr(self, "_confirm_engineering_mode_switch", True)),
                 "operator_quick_tour_seen": bool(getattr(self, "_operator_quick_tour_seen", False)),
+                "devices_auto_refresh_enabled": bool(getattr(self, "_devices_auto_refresh_enabled", False)),
+                "show_setup_wizard_on_launch": bool(getattr(self, "_show_setup_wizard_on_launch", False)),
             },
         }
 
@@ -7598,10 +7654,17 @@ class App(QMainWindow):
         if "operator_quick_tour_seen" in ui_state:
             self._operator_quick_tour_seen = bool(ui_state.get("operator_quick_tour_seen"))
             save_app_prefs_flag("operator_quick_tour_seen", self._operator_quick_tour_seen)
+        if "devices_auto_refresh_enabled" in ui_state:
+            self._devices_auto_refresh_enabled = bool(ui_state.get("devices_auto_refresh_enabled"))
+            save_app_prefs_flag("devices_auto_refresh_enabled", self._devices_auto_refresh_enabled)
+        if "show_setup_wizard_on_launch" in ui_state:
+            self._show_setup_wizard_on_launch = bool(ui_state.get("show_setup_wizard_on_launch"))
+            save_app_prefs_flag("show_setup_wizard_on_launch", self._show_setup_wizard_on_launch)
         self.apply_theme()
         if self._scheduler_policy in ("manual", "balanced", "full"):
             self._apply_scheduler_policy(self._scheduler_policy, persist=False, notify=False)
         self._apply_background_health_checks_policy(run_initial_check=self._background_health_checks_enabled)
+        self._apply_devices_auto_refresh_policy()
         self._apply_settings_role_mode()
         self.refresh_home_page()
         self.refresh_devices_page(force=True)
@@ -8221,13 +8284,13 @@ class App(QMainWindow):
             _AI_CATALOG = [
                 {"name": "L4T PyTorch 2.0 (Jetson)",       "img": "nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3",  "desc": "PyTorch 2.0 — JetPack 5.x"},
                 {"name": "L4T TensorFlow 2 (Jetson)",       "img": "nvcr.io/nvidia/l4t-tensorflow:r35.2.1-tf2-py3",   "desc": "TensorFlow 2 — JetPack 5.x"},
-                {"name": "L4T ML (Jetson, tümleşik)",       "img": "nvcr.io/nvidia/l4t-ml:r35.2.1-py3",               "desc": "PyTorch + TF + scikit-learn"},
+                {"name": "L4T ML (Jetson, integrated)",      "img": "nvcr.io/nvidia/l4t-ml:r35.2.1-py3",               "desc": "PyTorch + TF + scikit-learn"},
                 {"name": "Ultralytics YOLOv8 (Jetson)",     "img": "ultralytics/ultralytics:latest-jetson",           "desc": "YOLOv8 — Jetson optimize"},
-                {"name": "OpenCV + Python 3 (Jetson)",      "img": "nvcr.io/nvidia/l4t-base:r35.2.1",                  "desc": "Temel görüntü işleme"},
+                {"name": "OpenCV + Python 3 (Jetson)",      "img": "nvcr.io/nvidia/l4t-base:r35.2.1",                  "desc": "Base image processing"},
                 {"name": "ONNX Runtime (Jetson GPU)",       "img": "nvcr.io/nvidia/l4t-jetpack:r35.2.1",              "desc": "ONNX Runtime + CUDA"},
                 {"name": "ROS 2 Humble (Jetson)",           "img": "dustynv/ros:humble-ros-base-l4t-r35.2.1",         "desc": "ROS 2 + CUDA"},
-                {"name": "PyTorch (CPU — Mac/PC test)",     "img": "pytorch/pytorch:latest",                          "desc": "CPU — Jetson'da GPU kullanmaz"},
-                {"name": "Nginx Web (test)",                 "img": "nginx:latest",                                    "desc": "Web sunucu testi"},
+                {"name": "PyTorch (CPU — Mac/PC test)",     "img": "pytorch/pytorch:latest",                          "desc": "CPU only — no Jetson GPU acceleration"},
+                {"name": "Nginx Web (test)",                 "img": "nginx:latest",                                    "desc": "Web server test"},
             ]
             # Katalog + özel katalog birleştir
             _catalog_items = _AI_CATALOG + [i for i in CatalogManager.get_recommended()[0]
@@ -8235,14 +8298,14 @@ class App(QMainWindow):
             cat_combo = make_combo()
             for _ci in _catalog_items:
                 cat_combo.addItem(f"{_ci['name']}  —  {_ci.get('desc','')}", _ci["img"])
-            run_target_combo = make_combo(); run_target_combo.addItem("Yerel (bu makine)", "")
+            run_target_combo = make_combo(); run_target_combo.addItem("Local (this machine)", "")
             remote_ip = getattr(self, "node_ip", None)
             if remote_ip and getattr(remote_ip, "text", None):
                 ip = remote_ip.text().strip()
                 if ip:
                     online = check_remote_node_reachable(ip, port=2375, timeout=2)
                     run_target_combo.addItem(
-                        f"Uzak Jetson ({ip})  •  {'Çevrimiçi' if online else 'Çevrimdışı'}",
+                        f"Remote Jetson ({ip})  •  {'Online' if online else 'Offline'}",
                         ip
                     )
             # Bağlı SSH session'larından da Jetson IP'leri ekle
@@ -8509,7 +8572,7 @@ class App(QMainWindow):
         except Exception as e:
             log.warning("update_camera_meta failed: %s", e)
         self._attach_camera_thread(card, name, src, new_meta)
-        self.show_toast("Akış ayarları kaydedildi; önizleme yeniden başlatıldı.")
+        self.show_toast("Stream settings saved; preview restarted.")
 
     def _start_camera_preview(self, card):
         if card is None:
@@ -8658,7 +8721,7 @@ class App(QMainWindow):
         card = ResizableCard(pretty_workspace_title(cn), img, True)
         card.trigger_delete_modal.connect(self.show_delete_confirmation)
         card.removed.connect(card.deleteLater)
-        card.set_status_info("Hazırlanıyor…", "#3B82F6")
+        card.set_status_info("Preparing...", "#3B82F6")
         card.db = self.db
         self.df.removeWidget(self.abd)
         self.df.addWidget(card)
@@ -8699,21 +8762,21 @@ class App(QMainWindow):
             if s:
                 cid_norm = self._norm_cid(o)
                 card.container_id = cid_norm
-                card.set_status_info("Çalışıyor", "#30D158")
+                card.set_status_info("Running", "#30D158")
                 card.start_monitoring()
                 self.db.save_workspace(cn, img, cid_norm, host=target if use_remote else None)
                 if hasattr(self, "_refresh_workspace_package_panel"):
                     self._refresh_workspace_package_panel()
                 if use_remote:
                     self.notify_success(
-                        f"Uzak container başlatıldı: {cn} "
-                        f"({target}) — AI modülleri için terminali kullanın."
+                        f"Remote container started: {cn} "
+                        f"({target}) — use terminal for AI modules."
                     )
             else:
-                card.set_status_info("Hata", "#FF453A")
+                card.set_status_info("Error", "#FF453A")
                 raw = str(o).strip() if o else ""
                 if not raw:
-                    short, detail = "Container oluşturulamadı.", ""
+                    short, detail = "Container could not be created.", ""
                 else:
                     short, detail = docker_cli_error_for_ui(raw)
                 dlg = QMessageBox(self)
