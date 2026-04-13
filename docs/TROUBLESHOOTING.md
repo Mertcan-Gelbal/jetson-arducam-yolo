@@ -19,7 +19,7 @@ This guide covers common issues and their solutions when working with Arducam ca
 
 **Script Output:**
 ```
-Cannot find the corresponding deb package, please send the following information to support@arducam.com
+Cannot find the corresponding deb package for your exact L4T version
 Kernel version: 5.10.216-tegra-35.6.4-...
 Jetson type: NVIDIA Orin Nano Developer Kit
 ```
@@ -84,17 +84,6 @@ wget https://github.com/ArduCAM/MIPI_Camera/releases/download/v0.0.1-orin-nano/a
 sudo dpkg -i *.deb
 sudo reboot
 ```
-
-### Solution 3: Contact Arducam
-
-If no compatible version exists, you may need to request an update:
-
-1. **Email:** support@arducam.com
-2. **Include:**
-   - Your Jetson model: `cat /sys/firmware/devicetree/base/model`
-   - Your L4T version: `dpkg-query --showformat='${Version}' --show nvidia-l4t-kernel`
-   - Camera model (e.g., IMX219, IMX477, IMX519)
-3. **GitHub Issue:** https://github.com/ArduCAM/MIPI_Camera/issues
 
 ### Why Fallback Usually Works
 
