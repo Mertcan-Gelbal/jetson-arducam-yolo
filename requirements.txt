@@ -2,6 +2,6 @@ numpy>=1.22,<2.1
 Pillow>=9.5.0
 pyyaml>=6.0
 tqdm>=4.66.0
-ultralytics>=8.3.16
+ultralytics>=8.3.16,<8.4.0
 onnxruntime>=1.15.0
 # Note: torch and torchvision should be handled by the base L4T image
